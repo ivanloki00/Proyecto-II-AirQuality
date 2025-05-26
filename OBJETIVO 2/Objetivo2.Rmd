@@ -1,0 +1,333 @@
+---
+title: "Objetivo2"
+author: "Juanjo"
+date: "2025-05-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## 1. Introducción
+
+Este análisis identifica los sectores con huella directa ciudadana (Transporte, Residencial, Gestión de Residuos) y evalúa su impacto en la calidad del aire urbana en ciudades europeas, según el PM2.5 Atlas 2023. Los datos provienen de:
+
+- **gases_city.xlsx**: Contribuciones de gases (NH₃, NMVOC, NOx, PPM25, SOx) por ciudad y sector (GNFR), expresadas como una *Unidad de Impacto Relativo (UIR)*. El UIR es una medida relativa, que representa la contribución de cada gas y sector a las concentraciones de PM2.5, sin normalización a 100%.
+- **Ciudades_con_coordenadas.xlsx**: Coordenadas geográficas de ciudades.
+
+El objetivo es agrupar sectores con huella ciudadana, analizar su impacto en la calidad del aire urbana, representarlos en un mapa de Europa y explorar patrones y diferencias regionales, considerando la ubicación geográfica (norte, sur, este, oeste o centro).
+
+## 2. Carga de Librerías y Datos
+
+### 2.1 Instalación y Carga de Librerías
+
+Se cargan las librerías necesarias para la ejecución del código. 
+
+```{r libraries, error=TRUE}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(leaflet)
+library(knitr)
+library(plotly)
+```
+
+### 2.2 Carga de Datos
+
+Se cargan los archivos Excel y se verifica las filas de cada uno.
+
+```{r load_data, error=TRUE}
+gases <- read_excel("gases_city.xlsx")
+coords <- read_excel("Ciudades_con_coordenadas.xlsx")
+
+cat("Columnas en gases:", paste(names(gases), collapse = ", "), "\n")
+cat("Filas en gases:", nrow(gases), "\n")
+cat("Filas en coords:", nrow(coords), "\n")
+```
+
+### 2.3 Limpieza y Preparación
+
+Se estandarizan nombres de ciudades y se mapean los sectores GNFR a nombres descriptivos, seleccionando y separando sectores.
+
+```{r clean_data, error=TRUE}
+# Estandarizar nombres de ciudades
+gases$CIUDAD <- str_to_title(iconv(gases$CIUDAD, to="ASCII//TRANSLIT", sub=""))
+coords$City <- str_to_title(iconv(coords$City, to="ASCII//TRANSLIT", sub=""))
+
+# Añadir a cada sector su nombre 
+sectores_map <- tibble(
+  SECTOR = as.character(c(1:12)),
+  SECTOR_NOMBRE = c("Public_power", "Industry", "Residencial", "Fugitives", "Solvents", 
+                    "Road_transportation", "Shipping", "Aviation", "Off_Road_transportation", 
+                    "Waste", "Agriculture_livestock", "Agriculture_other")
+)
+
+# Convertir SECTOR de gases a carácter antes de la unión para asegurarnos de que sean igual
+gases$SECTOR <- as.character(gases$SECTOR)
+cat("Tipo de datos de gases$SECTOR:", class(gases$SECTOR), "\n")
+cat("Tipo de datos de sectores_map$SECTOR:", class(sectores_map$SECTOR), "\n")
+
+# Agregar nombres de sectores y clasificar en huella ciudadana y no ciudadana
+gases_classified <- gases %>%
+  left_join(sectores_map, by = "SECTOR") %>%
+  mutate(
+    SECTOR_AGREGADO = case_when(
+      SECTOR %in% c("6", "9") ~ "Transporte",
+      SECTOR == "3" ~ "Residencial",
+      SECTOR == "10" ~ "Waste",
+      TRUE ~ SECTOR_NOMBRE
+    ),
+    GRUPO = case_when(
+      SECTOR_AGREGADO %in% c("Transporte", "Residencial", "Waste") ~ "Con Huella Ciudadana",
+      TRUE ~ "Sin Huella Ciudadana"
+    )
+  ) %>%
+  group_by(CIUDAD, SECTOR_AGREGADO, GAS, GRUPO) %>%
+  summarise(UIR = sum(POTENCIAL, na.rm = TRUE)) %>%
+  ungroup()
+
+# Mostrar número de filas después del filtrado
+cat("Filas en gases_classified:", nrow(gases_classified), "\n")
+
+# Unir con datos de coordenadas
+data_merged <- gases_classified %>%
+  left_join(coords %>% select(City, Country, lat = latitude, lon = longitude), by = c("CIUDAD" = "City"))
+
+# Mostrar número de filas después de la unión
+cat("Filas en data_merged después de unión:", nrow(data_merged), "\n")
+```
+
+## 3. Análisis de la Huella Ciudadana
+
+### 3.1 Contribución de Sectores
+
+Se calcula la contribución total (suma) de cada sector a las emisiones de todos los gases (NH₃, NMVOC, NOx, PPM25, SOx), usando un gráfico de barras apiladas para comparar las cantidades totales de cada gas en sectores con y sin huella ciudadana.
+
+```{r sector_contribution}
+# Estandarizar los nombres de los gases para consistencia
+data_merged$GAS <- toupper(trimws(data_merged$GAS))
+
+# Calcular UIR total por sector, gas y grupo (usando suma)
+all_emissions <- data_merged %>%
+  group_by(GRUPO, GAS) %>%
+  summarise(UIR_Total = sum(UIR, na.rm = TRUE)) %>%
+  ungroup()
+
+
+# Gráfico de barras apiladas para sectores con huella ciudadana
+p1 <- ggplot(all_emissions %>% filter(GRUPO == "Con Huella Ciudadana"), 
+             aes(x = GRUPO, y = UIR_Total, fill = GAS)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Unidad de Impacto Relativo (UIR) Total de Gases (Con Huella Ciudadana)",
+       x = "Grupo", y = "UIR Total", fill = "Gas") +
+  theme_minimal() +
+  scale_fill_manual(values = c("NH3" = "blue", "NMVOC" = "green", "NOX" = "red", "PPM25" = "purple", "SOX" = "orange"))
+
+# Gráfico de barras apiladas para sectores sin huella ciudadana
+p2 <- ggplot(all_emissions %>% filter(GRUPO == "Sin Huella Ciudadana"), 
+             aes(x = GRUPO, y = UIR_Total, fill = GAS)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Unidad de Impacto Relativo (UIR) Total de Gases (Sin Huella Ciudadana)",
+       x = "Grupo", y = "UIR Total", fill = "Gas") +
+  theme_minimal() +
+  scale_fill_manual(values = c("NH3" = "blue", "NMVOC" = "green", "NOX" = "red", "PPM25" = "purple", "SOX" = "orange"))
+
+# Mostrar ambos gráficos
+print(p1)
+print(p2)
+
+```
+
+Se calcula la contribución total (suma) de cada sector a las emisiones (sumando todos los gases), desglosando por gas dentro de cada sector, y se presentan gráficos interactivos para identificar qué gas contribuye más en cada sector.
+
+```{r sector_contribution_total}
+# Estandarizar los nombres de los gases para consistencia
+data_merged$GAS <- toupper(trimws(data_merged$GAS))
+
+# Calcular UIR total por sector, grupo y gas (usando suma)
+sector_emissions <- data_merged %>%
+  group_by(GRUPO, SECTOR_AGREGADO, GAS) %>%
+  summarise(UIR_Total = sum(UIR, na.rm = TRUE)) %>%
+  ungroup()
+
+
+# Definir colores para los gases
+gas_colors <- c("NH3" = "blue", "NMVOC" = "green", "NOX" = "red", "PPM25" = "purple", "SOX" = "orange")
+
+# Gráfico para sectores con huella ciudadana
+p1 <- ggplot(sector_emissions %>% filter(GRUPO == "Con Huella Ciudadana"), 
+               aes(x = SECTOR_AGREGADO, y = UIR_Total, fill = GAS)) +
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +
+  labs(title = "Unidad de Impacto Relativo (UIR) Total por Sector y Gas (Huella Ciudadana)",
+       x = "Sector", y = "UIR Total", fill = "Gas") +
+  theme_minimal() +
+  scale_fill_manual(values = gas_colors)
+
+# Gráfico para sectores sin huella ciudadana
+p2 <- ggplot(sector_emissions %>% filter(GRUPO == "Sin Huella Ciudadana"), 
+             aes(x = SECTOR_AGREGADO, y = UIR_Total, fill = GAS)) +
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +
+  labs(title = "Unidad de Impacto Relativo (UIR) Total por Sector y Gas (Sin Huella Ciudadana)",
+       x = "Sector", y = "UIR Total", fill = "Gas") +
+  theme_minimal() +
+  scale_fill_manual(values = gas_colors)
+
+# Mostrar las gráficas
+p1_interactive <- ggplotly(p1, tooltip = c("x", "y", "fill"))
+p2_interactive <- ggplotly(p2, tooltip = c("x", "y", "fill"))
+print(p1_interactive)
+print(p2_interactive)
+
+```
+
+## 4. Representación Espacial
+
+Se representa espacialmente sobre un mapa de Europa las emisiones totales (sumas) de los sectores con huella ciudadana (Transporte, Residencial, Waste). Al seleccionar una ciudad, se muestra un desplegable con la Unidad de Impacto Relativo (UIR) total de cada gas para estos sectores. Las ciudades se colorean según su Total UIR, simulando un mapa de calor.
+
+```{r map, error=TRUE}
+# Calcular la suma del UIR por ciudad, sector y gas para sectores con huella ciudadana
+base_emissions <- data_merged %>%
+  filter(GRUPO == "Con Huella Ciudadana") %>%
+  group_by(CIUDAD, Country, SECTOR_AGREGADO, GAS) %>%
+  summarise(UIR = sum(UIR, na.rm = TRUE)) %>%
+  ungroup()
+
+# Calcular la suma del UIR por sector (sumando las contribuciones de los gases)
+total_emissions_by_sector <- base_emissions %>%
+  group_by(CIUDAD, Country, SECTOR_AGREGADO) %>%
+  summarise(UIR_Total = sum(UIR, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = SECTOR_AGREGADO, values_from = UIR_Total, values_fill = 0)
+
+# Calcular la suma total de las contribuciones por sector para cada ciudad
+total_by_city <- total_emissions_by_sector %>%
+  rowwise() %>%
+  mutate(Total_UIR = sum(Transporte, Residencial, Waste, na.rm = TRUE)) %>%
+  ungroup()
+
+# Calcular la suma del UIR por gas (sumando las contribuciones de los sectores)
+gas_sums_by_city <- base_emissions %>%
+  group_by(CIUDAD, Country, GAS) %>%
+  summarise(UIR_Total = sum(UIR, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = GAS, values_from = UIR_Total, values_fill = 0)
+
+# Unir datos con coordenadas y sumas de gases
+map_data <- total_by_city %>%
+  left_join(data_merged %>% distinct(CIUDAD, Country, lat, lon), by = c("CIUDAD", "Country")) %>%
+  left_join(gas_sums_by_city, by = c("CIUDAD", "Country")) %>%
+  filter(!is.na(lat) & !is.na(lon))
+
+
+# Crear una paleta de colores basada en Total_UIR
+pal <- colorNumeric(
+  palette = "YlOrRd",  # Paleta de amarillo a rojo
+  domain = map_data$Total_UIR
+)
+
+leaflet(data = map_data) %>%
+  addTiles() %>%
+  addCircles(
+    lng = ~lon, lat = ~lat, radius = ~Total_UIR * 100,
+    color = ~pal(Total_UIR),  # Color basado en Total_UIR
+    fillColor = ~pal(Total_UIR),
+    fillOpacity = 0.7,
+    popup = ~paste(
+      "<b>", CIUDAD, "</b><br>",
+      "<b>Transporte:</b> ", round(Transporte, 4), " UIR<br>",
+      "<b>Residencial:</b> ", round(Residencial, 4), " UIR<br>",
+      "<b>Waste:</b> ", round(Waste, 4), " UIR<br>",
+      "<b>Total UIR:</b> ", round(Total_UIR, 4), " UIR<br>",
+      "<details><summary><b>Unidad de Impacto Relativo (UIR) Total por Gas</b></summary>",
+      "<b>NH3:</b> ", round(NH3, 4), " UIR<br>",
+      "<b>NMVOC:</b> ", round(NMVOC, 4), " UIR<br>",
+      "<b>NOX:</b> ", round(NOX, 4), " UIR<br>",
+      "<b>PPM25:</b> ", round(PPM25, 4), " UIR<br>",
+      "<b>SOX:</b> ", round(SOX, 4), " UIR</details>"
+    )
+  ) %>%
+  addLegend("bottomright", 
+            pal = pal, 
+            values = ~Total_UIR,
+            title = "Total UIR",
+            opacity = 1)
+
+```
+
+## 5. Patrones Comunes y Diferencias Regionales
+
+Se analizan patrones y diferencias regionales en las emisiones de los sectores con huella ciudadana.
+
+### 5.1 Patrones según la Región Geográfica
+
+Se analiza si la ubicación geográfica (norte, sur, este, oeste o centro de Europa) influye en el potencial de contaminación (Total_UIR). Las ciudades se clasifican según sus coordenadas (latitud y longitud), y se calcula el Total_UIR por sector en cada región.
+
+```{r regional_patterns}
+# Clasificar ciudades por región geográfica
+regional_data <- total_by_city %>%
+  left_join(data_merged %>% distinct(CIUDAD, Country, lat, lon), by = c("CIUDAD", "Country")) %>%
+  mutate(
+    Region = case_when(
+      lat > 55 ~ "Norte",
+      lat < 45 ~ "Sur",
+      lon > 20 ~ "Este",
+      lon < 0 ~ "Oeste",
+      between(lat, 45, 55) & between(lon, 0, 20) ~ "Centro",
+      TRUE ~ "Desconocida"
+    )
+  ) %>%
+  filter(Region != "Desconocida")
+
+# Calcular UIR total por región y sector
+regional_patterns <- base_emissions %>%
+  left_join(data_merged %>% distinct(CIUDAD, Country, lat, lon), by = c("CIUDAD", "Country")) %>%
+  mutate(
+    Region = case_when(
+      lat > 55 ~ "Norte",
+      lat < 45 ~ "Sur",
+      lon > 20 ~ "Este",
+      lon < 0 ~ "Oeste",
+      between(lat, 45, 55) & between(lon, 0, 20) ~ "Centro",
+      TRUE ~ "Desconocida"
+    )
+  ) %>%
+  filter(Region != "Desconocida") %>%
+  group_by(Region, SECTOR_AGREGADO) %>%
+  summarise(UIR_Total = median(UIR, na.rm = TRUE)) %>%
+  ungroup()
+
+
+# Gráfico de barras apiladas por región y sector
+p_region <- ggplot(regional_patterns, aes(x = Region, y = UIR_Total, fill = SECTOR_AGREGADO)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "UIR Total por Región Geográfica y Sector (Huella Ciudadana)",
+       x = "Región", y = "UIR Total", fill = "Sector") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_region)
+
+
+# Seleccionar las 5 ciudades principales por región ordenadas por Total_UIR
+top_cities <- regional_data %>%
+  group_by(Region) %>%
+  arrange(desc(Total_UIR)) %>%
+  slice_head(n = 5) %>%
+  ungroup() %>%
+  select(CIUDAD, Country, Region, Total_UIR)
+
+
+# Mostrar tabla con las 5 ciudades principales por región
+knitr::kable(
+  top_cities,
+  col.names = c("Ciudad", "País", "Región", "Total UIR"),
+  caption = "Top 5 Ciudades por Región según Total UIR",
+  digits = 2,
+  format = "html"
+)
+
+```

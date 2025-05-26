@@ -1,0 +1,572 @@
+---
+title: "Objetivo 4"
+author: "Iván"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tibble)
+library(readxl)
+library(purrr)
+library(writexl)
+library(ggplot2)
+library(ggrepel)
+library(scales)
+
+```
+
+## Explicación:
+
+[**OBJETIVO IV**]{.underline}: *Estimar un índice de contaminación por país y analizar el resto de sectores que no tienen relación directa con la huella ciudadana como las industrias o la agricultura*.
+
+Construir una **fórmula** para estimar un **índice de contaminación por país**, a partir de los datos de calidad del aire de las ciudades principales ponderadas por su **densidad poblacional**. Este índice servirá para analizar diferencias entre países y explorar la contaminación atribuible a **sectores donde la ciudadanía no tiene acción directa**, como la agricultura extensiva o ciertas industrias pesadas, incorporando también **indicadores económicos nacionales** para analizar de mejor forma las diferencias entre sectores de diversos países.
+
+Eurostat proporciona datos del PIB a precios de mercado actuales por regiones NUTS 2, así como herramientas para identificar la región correspondiente a cada ciudad europea. A partir de esta asociación, es posible asignar a cada ciudad un valor de PIB regional. Cuando no se dispone de datos urbanos específicos, se puede estimar el PIB de la ciudad en función de su peso poblacional dentro de la región NUTS 2, permitiendo así comparaciones coherentes.
+
+### 1. Selección de sectores
+
+Sectores no atribuibles directamente a la ciudadanía
+
+Para el análisis de emisiones, se ha seleccionado un conjunto de sectores considerados como no atribuibles directamente al comportamiento individual o doméstico de la ciudadanía. Estos sectores incluyen actividades industriales, agrícolas, energéticas o institucionales, cuyas emisiones dependen principalmente de políticas públicas, estructuras económicas y procesos productivos a gran escala.
+
+Los sectores considerados son los siguientes:
+
+**Sector 1** **– Producción y transformación de energía:** Incluye las emisiones originadas en centrales térmicas, plantas de cogeneración, refinerías y otras instalaciones de generación energética. No se consideran aquí los consumos residenciales.
+
+**Sector 2 – Industria manufacturera y construcción:** Abarca los procesos de combustión y consumo energético en la industria y la construcción, excluyendo el uso doméstico.
+
+**Sector 4 – Procesos industriales y uso de productos:** Se refiere a emisiones no energéticas que provienen de transformaciones químicas en la producción de cemento, acero, fertilizantes, entre otros.
+
+**Sector 7 – Transporte por carretera:** Incluye las emisiones del parque móvil terrestre, tanto privado como profesional (automóviles, camiones, autobuses), excluyendo la navegación y la aviación.
+
+**Sector 8 – Otras fuentes móviles y maquinaria:** Considera la maquinaria agrícola, de construcción, trenes, barcos y aviones en tierra. Son emisiones vinculadas a medios de transporte no convencionales o no urbanos.
+
+**Sector 9 – Gestión de residuos:** Comprende emisiones procedentes de vertederos, plantas de incineración, tratamiento de aguas residuales y compostaje.
+
+**Sector 11 – Agricultura:** Incluye emisiones asociadas a prácticas agrícolas y ganaderas, como el uso de fertilizantes, la gestión de estiércol o la fermentación entérica del ganado.
+
+**Sector 12 – Uso del suelo, cambio de uso del suelo y silvicultura:** Registra tanto emisiones como absorciones de carbono debidas a la deforestación, reforestación, cultivos o drenaje de humedales.
+
+### 2. Integración y Agregación de Datos por Ciudad a Nivel NUTS 2
+
+```{r}
+# Archivos y lectura de datos 
+archivo_lau <- "EU-27-LAU-2024-NUTS-2024.xlsx"
+archivo_gases <- "Gases.xlsx"
+archivo_ranking <- "Ranking ciudades.xlsx"
+
+hojas <- excel_sheets(archivo_lau)
+hojas_paises <- hojas[!(hojas %in% c("File_info", "Overview", "Overview_Population"))]
+
+ranking <- read_excel(archivo_ranking, sheet = "Ranking ciudades") %>%
+  rename(CITY = CIUDAD, Poblacion = POBLACION) %>%
+  mutate(CITY = str_trim(CITY))
+
+gases <- read_excel(archivo_gases, sheet = "Ciudades_origen_gases") %>%
+  rename(CITY = CIUDAD)
+
+sectores_validos <- c(1, 2, 4, 7, 8, 9, 11, 12)
+
+emisiones_filtradas <- gases %>%
+  filter(SECTOR %in% sectores_validos) %>%
+  group_by(CITY) %>%
+  summarise(Emision_no_ciudad = sum(POTENCIAL, na.rm = TRUE), .groups = "drop")
+
+#  Función por país con agrupación NUTS2
+procesar_pais_nuts2 <- function(pais) {
+  message("Procesando: ", pais)
+
+  lau <- tryCatch(
+    read_excel(archivo_lau, sheet = pais) %>%
+      rename(
+        CITY = `LAU NAME LATIN`,
+        NUTS3 = `NUTS 3 CODE`,
+        Area_m2 = `TOTAL AREA (m2)`
+      ) %>%
+      mutate(
+        CITY = str_trim(CITY),
+        Area_km2 = Area_m2 / 1e6
+      ),
+    error = function(e) return(NULL)
+  )
+
+  if (is.null(lau)) return(NULL)
+
+  ciudades_nuts3 <- left_join(ranking, lau, by = "CITY") %>%
+    mutate(NUTS2 = substr(NUTS3, 1, 4))
+
+  datos_agrupados <- ciudades_nuts3 %>%
+    group_by(NUTS2) %>%
+    summarise(
+      Poblacion_Urbana = sum(Poblacion, na.rm = TRUE),
+      Area_Total_km2   = sum(Area_km2, na.rm = TRUE),
+      Densidad_media   = Poblacion_Urbana / Area_Total_km2,
+      .groups = "drop"
+    )
+
+  ciudades_emisiones <- left_join(ciudades_nuts3, emisiones_filtradas, by = "CITY")
+
+  emisiones_agrupadas <- ciudades_emisiones %>%
+    group_by(NUTS2) %>%
+    summarise(
+      Emision_no_ciudad = sum(Emision_no_ciudad, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  resultado <- left_join(datos_agrupados, emisiones_agrupadas, by = "NUTS2") %>%
+    mutate(Pais = pais)
+
+  return(resultado)
+}
+
+# Aplicar a todos los países y mostrar resultado
+resultados_nuts2 <- map_dfr(hojas_paises, procesar_pais_nuts2)
+
+# Vista final
+print(resultados_nuts2)
+```
+
+En el código se procesan datos de ciudades europeas agrupándolos por regiones NUTS2. Primero, carga tres archivos Excel: uno con información geográfica (áreas y códigos NUTS), otro con datos de población urbana por ciudad, y otro con emisiones por sectores. Luego, selecciona las hojas correspondientes a países y define una función que, para cada uno, lee sus datos, los combina con la población y emisiones válidas (sectores 1, 2, 4, 7, 8, 9, 11 y 12), y calcula por cada región NUTS2 la población urbana total, el área total en km², la densidad poblacional media y las emisiones no ciudadanas. El resultado final es una tabla consolidada con todos los países, lista para análisis posteriores.
+
+#### 2.1 Descarte de agrupación por NUTS 2
+
+Las regiones NUTS 2 no tienen una homogeneidad territorial clara entre países. Por ejemplo:
+
+-   En España, NUTS 2 son las Comunidades Autónomas (Andalucía, Cataluña…)
+
+-   En Alemania, NUTS 2 incluye Regierungsbezirke o combinaciones de distritos, con tamaños muy desiguales.
+
+Esto puede hacer que los datos agregados a NUTS 2 sean difíciles de comparar entre países, ya que representan realidades administrativas y poblacionales muy distintas.
+
+**NUTS 1 ofrece mayor estabilidad y agregación útil**, para muchos análisis de tipo nacional, económico o ambiental, NUTS 1 proporciona una división más adecuada:
+
+-   Agrega el ruido estadístico presente a nivel de detalle más fino.
+
+-   Representa mejor regiones funcionales amplias, como "Este", "Centro", "Sur"..
+
+### 3. Integración y Agregación de Datos por Ciudad a Nivel NUTS 1
+
+Se procede a agrupar e integrar los datos procedentes de diferentes bases de datos utilizando como criterio de agregación el código NUTS 1, el cual permite una desagregación regiones dentro de cada país. Esta agregación se realiza de forma independiente para cada país, con el objetivo de evitar errores debidos a solapamientos o codificaciones inconsistentes entre regiones homónimas de distintos Estados.
+
+Para cada ciudad, se identifican las unidades territoriales NUTS 1 correspondientes y se suman los valores asociados al potencial de emisión de gases atribuibles a sectores no ciudadanos (por ejemplo, sectores industriales, comerciales o de transporte de mercancías). Asimismo, se agregan los datos relativos a:
+
+-   Producto Interior Bruto (PIB)
+
+-   Población residente
+
+-   Área total (en km²)
+
+```{r}
+# Cargar datos
+lau_nuts <- read_excel("EU-27-LAU-2024-NUTS-2024.xlsx", sheet = "ES")
+gases     <- read_excel("Gases.xlsx", sheet = "Ciudades_origen_gases")
+ranking   <- read_excel("Ranking ciudades.xlsx", sheet = "Ranking ciudades")
+
+# Tabla de correspondencia NUTS1 ↔ Región
+nuts1_to_region <- tribble(
+  ~NUTS1, ~Region,
+  "ES1", "Noroeste",
+  "ES2", "Nordeste",
+  "ES3", "Comunidad Madrid",
+  "ES4", "Centro",
+  "ES5", "Este",
+  "ES6", "Sur", 
+  "ES7", "Canarias"  # Canarias como está
+)
+
+# Preparar nombres y área
+lau_nuts <- lau_nuts %>%
+  rename(
+    CITY    = `LAU NAME LATIN`,
+    NUTS3   = `NUTS 3 CODE`,
+    Area_m2 = `TOTAL AREA (m2)`
+  ) %>%
+  mutate(
+    CITY     = str_trim(CITY),
+    Area_km2 = Area_m2 / 1e6
+  )
+
+ranking <- ranking %>%
+  rename(
+    CITY      = CIUDAD,
+    Poblacion = POBLACION
+  ) %>%
+  mutate(CITY = str_trim(CITY))
+
+# Unir ranking con área y NUTS3
+ciudades_nuts3 <- left_join(ranking, lau_nuts, by = "CITY")
+
+# Extraer NUTS1 y unir con nombre de región
+ciudades_nuts3 <- ciudades_nuts3 %>%
+  mutate(NUTS1 = substr(NUTS3, 1, 3)) %>%
+  left_join(nuts1_to_region, by = "NUTS1")
+
+# Agregaciones de población y área por NUTS1
+datos_agrupados <- ciudades_nuts3 %>%
+  group_by(NUTS1, Region) %>%
+  summarise(
+    Poblacion_Urbana = sum(Poblacion, na.rm = TRUE),
+    Area_Total_km2   = sum(Area_km2,   na.rm = TRUE),
+    Densidad_media   = Poblacion_Urbana / Area_Total_km2,
+    .groups = "drop"
+  )
+
+# Emisiones por sectores no ciudadanos
+sectores_validos <- c(1, 2, 4, 7, 8, 9, 11, 12)
+
+emisiones_filtradas <- gases %>%
+  filter(SECTOR %in% sectores_validos) %>%
+  group_by(CIUDAD) %>%
+  summarise(
+    Emision_no_ciudad = sum(POTENCIAL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rename(CITY = CIUDAD)
+
+# Unir emisiones y extraer NUTS1
+ciudades_emisiones <- left_join(ciudades_nuts3, emisiones_filtradas, by = "CITY")
+
+# Emisiones agregadas por NUTS1
+emisiones_agrupadas <- ciudades_emisiones %>%
+  group_by(NUTS1, Region) %>%
+  summarise(
+    Emision_no_ciudad = sum(Emision_no_ciudad, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Combinar poblaciones y emisiones
+resultado_final <- left_join(
+  datos_agrupados,
+  emisiones_agrupadas,
+  by = c("NUTS1", "Region")
+)
+
+# Mostrar resultado
+print(resultado_final)
+
+```
+
+Podemos optimizarlo para todos los paises de esta forma:
+
+```{r}
+archivo_lau <- "EU-27-LAU-2024-NUTS-2024.xlsx"
+archivo_gases <- "Gases.xlsx"
+archivo_ranking <- "Ranking ciudades.xlsx"
+
+# Leer todas las hojas (nombres de países) 
+hojas <- excel_sheets(archivo_lau)
+hojas_paises <- hojas[!(hojas %in% c("File_info", "Overview", "Overview_Population"))]
+
+# Cargar datos auxiliares
+ranking <- read_excel(archivo_ranking, sheet = "Ranking ciudades") %>%
+  rename(CITY = CIUDAD, Poblacion = POBLACION) %>%
+  mutate(CITY = str_trim(CITY))
+
+gases <- read_excel(archivo_gases, sheet = "Ciudades_origen_gases") %>%
+  rename(CITY = CIUDAD)
+
+sectores_validos <- c(1, 2, 4, 7, 8, 9, 11, 12)
+
+emisiones_filtradas <- gases %>%
+  filter(SECTOR %in% sectores_validos) %>%
+  group_by(CITY) %>%
+  summarise(Emision_no_ciudad = sum(POTENCIAL, na.rm = TRUE), .groups = "drop")
+
+# Función de procesamiento por país
+procesar_pais <- function(pais) {
+  message("Procesando: ", pais)
+  
+  lau <- tryCatch(
+    read_excel(archivo_lau, sheet = pais) %>%
+      rename(
+        CITY = `LAU NAME LATIN`,
+        NUTS3 = `NUTS 3 CODE`,
+        Area_m2 = `TOTAL AREA (m2)`
+      ) %>%
+      mutate(
+        CITY = str_trim(CITY),
+        Area_km2 = Area_m2 / 1e6
+      ),
+    error = function(e) return(NULL)
+  )
+  
+  if (is.null(lau)) return(NULL)
+
+  ciudades_nuts3 <- left_join(ranking, lau, by = "CITY") %>%
+    mutate(NUTS1 = substr(NUTS3, 1, 3))
+
+  datos_agrupados <- ciudades_nuts3 %>%
+    group_by(NUTS1) %>%
+    summarise(
+      Poblacion_Urbana = sum(Poblacion, na.rm = TRUE),
+      Area_Total_km2 = sum(Area_km2, na.rm = TRUE),
+      Densidad_media = Poblacion_Urbana / Area_Total_km2,
+      .groups = "drop"
+    )
+
+  ciudades_emisiones <- left_join(ciudades_nuts3, emisiones_filtradas, by = "CITY")
+
+  emisiones_agrupadas <- ciudades_emisiones %>%
+    group_by(NUTS1) %>%
+    summarise(Emision_no_ciudad = sum(Emision_no_ciudad, na.rm = TRUE), .groups = "drop")
+
+  resultado <- left_join(datos_agrupados, emisiones_agrupadas, by = "NUTS1") %>%
+    mutate(Pais = pais)
+
+  return(resultado)
+}
+
+resultados_todos <- map_dfr(hojas_paises, procesar_pais)
+
+print(resultados_todos)
+```
+
+En la siguiente tabla, aparecen los países que no están agrupados por NUTS 1 porque solo tienen una región NUTS 2 en la base de datos. Esto implica que no es posible hacer una agregación territorial adicional para esos países a nivel NUTS 1.
+
+```{r}
+# Leer datos desde la hoja correspondiente
+df <- read_excel("Pasies_comunidad.xlsx", sheet = "Anexar1")
+
+# Extraer código NUTS1 (primeros 3 caracteres de NUTS2)
+df <- df %>%
+  mutate(NUTS1 = substr(NUTS2, 1, 3))
+
+# Calcular número de regiones NUTS2 y NUTS1 por país
+df_nuts_check <- df %>%
+  group_by(Pais_Nombre) %>%
+  summarise(
+    Num_NUTS1 = n_distinct(NUTS1),
+    Num_NUTS2 = n_distinct(NUTS2)
+  )
+
+# Filtrar países que no tienen subdivisiones NUTS2 (solo una región)
+df_no_agrupables <- df_nuts_check %>%
+  filter(Num_NUTS2 == 1)
+
+# Mostrar la tabla final
+print(df_no_agrupables)
+
+```
+
+### 4. Índice por NUT1
+
+Para comparar de forma justa el impacto de la contaminación entre regiones, proponemos el siguiente índice:
+
+$$
+\text{Índice}_r = \left( \frac{E_r}{\text{Área}_r} \right) \cdot \left( \frac{D_r}{\overline{D}} \right) \cdot \left( \frac{\overline{\text{PIB}}}{\text{PIB}_r} \right)
+$$
+
+donde:
+
+-   $E_r$: emisiones totales de la región $r$
+-   $\text{Área}_r$: área total (en km²) de la región $r$
+-   $D_r$: densidad poblacional de la región $r$ (habitantes/km²)
+-   $\text{PIB}_r$: Producto Interior Bruto de la región $r$
+-   $\overline{D}$: densidad media de todas las regiones
+-   $\overline{\text{PIB}}$: PIB medio de todas las regiones
+
+Este índice pondera las emisiones por unidad de superficie (intensidad contaminante), corrigiendo por densidad (representando exposición ciudadana) y penalizando regiones con bajo PIB (menor capacidad de mitigación). De este modo se evita que regiones extensas o ricas parezcan menos contaminantes por escala, promoviendo una comparación proporcional y justa.
+
+```{r}
+# Cargar los datos
+reg <- read_excel("Pasies_comunidad.xlsx")
+
+# Calcular medias necesarias
+media_densidad <- mean(reg$Densidad_media, na.rm = TRUE)
+media_pib      <- mean(reg$PIB_mill_euros, na.rm = TRUE)
+
+# Calcular índice de contaminación
+reg <- reg %>%
+  mutate(
+    Intensidad_Emision   = Emisiones_no_ciudad / Area_Total_km2,
+    Factor_Densidad      = Densidad_media / media_densidad,
+    Factor_PIB           = media_pib / PIB_mill_euros,
+    Indice_Contaminacion = Intensidad_Emision * Factor_Densidad * Factor_PIB
+  )
+
+# Guardar en un nuevo archivo Excel
+write_xlsx(reg, "Pasies_comunidad_con_indice.xlsx")
+print(reg)
+
+```
+
+### 5. Índice por paises
+
+**Definiciones y notación**
+
+-   $i$: índice del país.\
+-   $j$: índice de ciudad dentro del país $i$.\
+-   $C_{ij}$: nivel de contaminación en la ciudad $j$ (por ejemplo, concentración de PM2.5 o un índice compuesto).\
+-   $D_{ij}$: densidad poblacional de la ciudad $j$ (habitantes/km²).\
+-   $w_{ij}$: peso relativo de la ciudad $j$ en el país $i$, basado en su densidad poblacional:
+
+$$
+w_{ij} = \frac{D_{ij}}{\sum_{j \in i} D_{ij}}
+$$
+
+-   $S_i^{\text{ciudad.}}$: suma de emisiones de los sectores **no atribuibles a la ciudadanía** en el país $i$, incluyendo los sectores:
+
+$$
+S = \{1, 2, 4, 7, 8, 9, 11, 12\}
+$$
+
+-   $\text{PIB}_i$: Producto Interior Bruto del país $i$.
+
+**Fórmula del índice compuesto**
+
+$$
+\text{ÍndiceContaminación}_i = \left( \sum_{j \in i} w_{ij} \cdot C_{ij} \right) \cdot \left( \frac{S_i^{\text{ciudad.}}}{\text{PIB}_i} \right)
+$$
+
+**Interpretación de cada componente**
+
+-   $\sum w_{ij} \cdot C_{ij}$: exposición media urbana ponderada por densidad poblacional (ciudades más densas tienen más peso).\
+-   $\frac{S_i^{\text{ciudad.}}}{\text{PIB}_i}$: intensidad estructural de emisiones, normalizada respecto al nivel de riqueza nacional.
+
+```{r}
+# 1. Leer datos
+df <- read_excel("Pasies_comunidad.xlsx")
+
+# 2. Normalizar Densidad y PIB a rango [0,1]
+df_norm <- df %>%
+  mutate(
+    dens_norm = (Densidad_media - min(Densidad_media, na.rm = TRUE)) /
+                (max(Densidad_media, na.rm = TRUE) - min(Densidad_media, na.rm = TRUE)),
+    pib_norm  = (PIB_mill_euros - min(PIB_mill_euros,       na.rm = TRUE)) /
+                (max(PIB_mill_euros, na.rm = TRUE) - min(PIB_mill_euros, na.rm = TRUE))
+  )
+
+# 3. Índice de contaminación (media de las dos normalizadas)
+df_norm <- df_norm %>%
+  mutate(indice_contaminacion = (dens_norm + pib_norm) / 2)
+
+# 4. Agregar por país
+indice_por_pais <- df_norm %>%
+  group_by(Pais_Nombre) %>%
+  summarise(
+    n_comunidades    = n(),
+    indice_medio     = mean(indice_contaminacion, na.rm = TRUE),
+    indice_suma      = sum(indice_contaminacion,  na.rm = TRUE)
+  ) %>%
+  arrange(desc(indice_medio))
+
+print(indice_por_pais)
+```
+
+Este índice podrá ser usado en caso de que se quiera realizar una comparativa intra-paises, sin embargo se opta por la opcion de la divisiones de los países en reigones NUTS1 para posteriores analisis en el hito 5. Ya que ofrencen una mejor visualización y aportan granularidad al informe.
+
+### 6. PCA
+
+A continuación se presenta un análisis de Componentes Principales (PCA) con el objetivo de **validar la estructura del índice de contaminación** propuesto y extraer información adicional sobre las relaciones entre las variables utilizadas.
+
+```{r}
+# 1. Cargar librerías
+library(readxl)
+library(FactoMineR)
+library(factoextra)
+
+# 2. Leer datos
+df <- read_excel("Pasies_comunidad_con_indice_.xlsx")
+
+# 3. Seleccionar variables numéricas para PCA
+df_pca <- df %>%
+  dplyr::select(Intensidad_Emision, Factor_Densidad, Factor_PIB, Indice_Contaminacion) %>%
+  na.omit()
+
+# 4. Realizar PCA
+res.pca <- PCA(df_pca, scale.unit = TRUE, graph = FALSE)
+
+# 5. Visualización de variables (círculo de correlaciones)
+fviz_pca_var(res.pca,
+             col.var = "contrib", # color por contribución al eje
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE, title = "PCA - Círculo de Correlaciones")
+
+# 6. Visualización de individuos (regiones)
+fviz_pca_ind(res.pca,
+             geom.ind = "point",
+             pointshape = 21,
+             fill.ind = "lightblue",
+             col.ind = "black",
+             repel = TRUE,
+             title = "PCA - Regiones según componentes principales")
+
+```
+
+Desde un punto de vista estructural, el índice de contaminación muestra una fuerte alineación con la **intensidad de emisiones** y el **factor de densidad poblacional**, lo que confirma que representa adecuadamente estas dos dimensiones clave. Por otro lado, el **factor PIB** aparece ortogonal (perpendicular) a las anteriores, lo cual indica que aporta una dimensión independiente no correlacionada linealmente, reforzando la decisión metodológica de **multiplicar los factores en lugar de sumarlos**.
+
+En términos de varianza explicada, los dos primeros componentes principales recogen el **82,4 % de la variabilidad total** (62,1 % y 25,3 %, respectivamente), lo que demuestra que las variables seleccionadas son altamente informativas y que el índice sintetiza de manera eficaz la estructura subyacente de los datos.
+
+### 7. Representación del índice:
+
+A continuación se representa visualmente el índice de contaminación en función de las principales variables estructurales que lo componen: el **PIB regional** (en escala logarítmica) y la **densidad de población**. Esta visualización permite identificar patrones espaciales y económicos en los niveles de contaminación, destacando aquellas regiones que presentan valores especialmente altos.
+
+El tamaño de los puntos representa la **intensidad de emisión por km²**, mientras que el color refleja el **valor del índice de contaminación**. Para facilitar la interpretación del gradiente de color, se han utilizado los cuantiles 5 % y 95 % como límites inferior y superior, evitando que los valores extremos distorsionen la escala cromática. Además, se han etiquetado aquellas regiones con un índice de contaminación elevado, permitiendo identificar casos críticos dentro del conjunto de datos.
+
+```{r}
+# 1. Cargar datos
+df <- read_excel("Pasies_comunidad_con_indice_.xlsx") %>%
+  filter(!is.na(Indice_Contaminacion)) %>%
+  mutate(
+    Etiqueta = ifelse(Indice_Contaminacion > quantile(Indice_Contaminacion), Nombre_Region, NA)
+  )
+
+# 2. Calcular cuantiles para rescalar la paleta de color
+lim_inf <- quantile(df$Indice_Contaminacion, 0.05, na.rm = TRUE)
+lim_sup <- quantile(df$Indice_Contaminacion, 0.95, na.rm = TRUE)
+
+# 3. Crear gráfico
+ggplot(df, aes(x = PIB_mill_euros, y = Densidad_media)) +
+  geom_point(aes(size = Intensidad_Emision, color = Indice_Contaminacion), alpha = 0.85) +
+  scale_x_log10(labels = scales::comma_format(scale = 1e-6, suffix = "M€")) +
+  scale_color_gradientn(
+    colors = c("skyblue", "orange", "red"),
+    values = rescale(c(lim_inf, lim_sup)),
+    limits = c(min(df$Indice_Contaminacion), max(df$Indice_Contaminacion)),
+    name = "Contamination Index"
+  ) +
+  scale_size_continuous(range = c(2, 10)) +
+  geom_text_repel(aes(label = Etiqueta), size = 3.2, max.overlaps = 10) +
+  theme_minimal() +
+  labs(
+    title = "European regions according to the structure of the pollution index",
+    subtitle = "Logarithmic scale for GDP",
+    x = "Regional GDP (million €)",
+    y = "Population Density (inhabitants/km²)",
+    size = "Emission Intensity"
+  )
+
+
+
+```
+
+#### 7.1. **Identificación de regiones críticas**
+
+Regiones como **Yerevan**, **Outer London**, **Wien**, **Algarve** o **Minsk City** aparecen destacadas por presentar una **combinación extrema de alta densidad poblacional e intensidad de emisiones**, lo que las sitúa en los niveles más altos del índice de contaminación. Estas regiones, además de estar claramente alejadas del resto en el espacio gráfico, se encuentran también en una franja de color más intenso, lo que confirma su peso en el mapa de riesgo ambiental.
+
+#### 7.2. **Dimensiones del problema**
+
+Se observan dos ejes explicativos:
+
+-   **Dimensión socioeconómica (eje X)**: Las regiones con **bajo PIB** tienden a presentar niveles más altos de contaminación relativa, en consonancia con lo observado en el PCA (el factor PIB tiene un efecto de "compensación"). Esta relación sugiere que, aunque un PIB más elevado suele asociarse a una mayor actividad económica, también está correlacionado con **una mayor capacidad tecnológica y de inversión en infraestructuras menos contaminantes**.
+
+<!-- -->
+
+-   **Dimensión poblacional (eje Y)**: La **densidad de población** es un factor amplificador clave. A igualdad de emisiones, una mayor densidad implica mayor presión ambiental y mayor exposición de la población, como se refleja claramente en la ubicación vertical de las regiones más problemáticas.
+
+#### 7.3. **Grupos diferenciados de regiones**
+
+El gráfico permite distinguir al menos **tres grupos de comportamiento**:
+
+-   Regiones con **bajo PIB y alta densidad**, donde el índice es muy elevado.
+
+-   Regiones con **PIB elevado y densidad moderada**, donde el índice se mantiene bajo gracias a un mayor equilibrio estructural.
+
+-   Regiones con **bajo PIB y baja densidad**, que muestran índices bajos principalmente por dispersión territorial.
