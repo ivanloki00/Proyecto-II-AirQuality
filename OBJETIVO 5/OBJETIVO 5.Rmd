@@ -1,0 +1,474 @@
+---
+title: "OBJETIVOV"
+author: "Ivette Mahmoud"
+date: "2025-04-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Carga de librerías y datos
+```{r Carga}
+
+packages <- c("readxl", "dplyr", "ggplot2", "sf", "rnaturalearth", "rnaturalearthdata",
+              "cluster", "factoextra","FactoMineR", "tidyr", "tidygeocoder", "openxlsx")
+installed <- packages %in% installed.packages()
+if (any(!installed)) install.packages(packages[!installed])
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(cluster)
+library(factoextra)
+library(tidyr)
+library(tidygeocoder)
+library(openxlsx)
+library(FactoMineR)
+
+regiones_sin_coords <- read_excel("Pasies_comunidad.xlsx")
+
+# Descripción de variables
+descRegiones_sin_coords <- data.frame(
+  variable = c("NUTS2", "Nombre_Region", "Poblacion_Urbana", "Area_Total_km2",
+               "Densidad_media", "Emisiones_no_ciudad", "PIB_mill_euros", "Pais_Nombre", "Indice_Contaminacion"),
+  tipo = c("text", "text", "numerical", "numerical", "numerical", "numerical", "numerical", "text", "numerical"),
+  stringsAsFactors = FALSE
+)
+rownames(descRegiones_sin_coords) <- descRegiones_sin_coords$variable
+descRegiones_sin_coords
+
+# Geocodificamos usando dirección compuesta: región, país
+regiones_sin_coords <- regiones_sin_coords %>%
+  mutate(Direccion_Geocodificada = paste(Nombre_Region, Pais_Nombre, sep = ", "))
+
+regiones <- regiones_sin_coords %>%
+  geocode(address = Direccion_Geocodificada, method = "osm", lat = Latitud, long = Longitud, verbose = FALSE)
+
+output_path <- "Pasies_comunidad_con_coords.xlsx"
+write.xlsx(regiones, output_path)
+
+regiones <- read_excel("Pasies_comunidad_con_coords.xlsx")
+
+# Redefinimos la descripción de variables incluyendo lat y long
+descRegiones <- data.frame(
+  variable = c("NUTS2", "Nombre_Region", "Poblacion_Urbana", "Area_Total_km2",
+               "Densidad_media", "Emisiones_no_ciudad", "PIB_mill_euros", "Pais_Nombre", "Indice_Contaminacion", "Latitud", "Longitud"),
+  tipo = c("text", "text", "numerical", "numerical", "numerical", "numerical", "numerical", "text", "numerical", "numerical", "numerical"),
+  stringsAsFactors = FALSE
+)
+rownames(descRegiones) <- descRegiones$variable
+descRegiones
+
+```
+
+# Valores faltantes y anómalos
+```{r Faltantes}
+
+# Crear una columna booleana para guardar valores anómalos
+regiones <- regiones %>%
+  mutate(
+    Coordenadas_Anomalas = case_when(
+      Latitud < 26 | Latitud > 72 | Longitud < -25 | Longitud > 45 ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# Ver anómalos
+regiones %>% filter(Coordenadas_Anomalas == TRUE) %>%
+  select(Nombre_Region, Pais_Nombre, Latitud, Longitud)
+
+# Tabla resumen de valores faltantes por variable en regiones
+numNA <- sapply(regiones[, c("Latitud", "Longitud")], function(x) sum(is.na(x)))
+percNA <- round(100 * sapply(regiones[, c("Latitud", "Longitud")], function(x) mean(is.na(x))), 2)
+tablaNA <- data.frame(Variable = names(numNA), NumNA = numNA, PorcentajeNA = percNA)
+print(tablaNA)
+
+regiones %>%
+  filter(is.na(Latitud) | is.na(Longitud)) %>%
+  select(Nombre_Region, Latitud, Longitud)
+
+# Calcular centroides por país
+centroides_pais <- regiones %>%
+  filter(!is.na(Latitud) & !is.na(Longitud)) %>%
+  group_by(Pais_Nombre) %>%
+  summarise(
+    Lat_Centroide = mean(Latitud, na.rm = TRUE),
+    Lon_Centroide = mean(Longitud, na.rm = TRUE)
+  )
+
+# Añadir los centroides a la tabla
+regiones_con_centroides <- regiones %>%
+  left_join(centroides_pais, by = "Pais_Nombre")
+
+# Copia del dataframe original para comparar después (asegurar que se ha hecho bien)
+regiones_original <- regiones
+
+# Imputar valores ausentes o anómalos con los centroides
+regiones2 <- regiones_con_centroides %>%
+  mutate(
+    Latitud = case_when(
+      is.na(Latitud) | Latitud < 26 | Latitud > 72 ~ Lat_Centroide,
+      TRUE ~ Latitud
+    ),
+    Longitud = case_when(
+      is.na(Longitud) | Longitud < -25 | Longitud > 45 ~ Lon_Centroide,
+      TRUE ~ Longitud
+    )
+  ) %>%
+  select(-Lat_Centroide, -Lon_Centroide)
+
+# Filas que fueron modificadas por imputación
+coordenadas_imputadas <- regiones_original %>%
+  select(Nombre_Region, Pais_Nombre, Latitud_original = Latitud, Longitud_original = Longitud) %>%
+  mutate(row_id = row_number()) %>%
+  left_join(
+    regiones2 %>%
+      select(Latitud, Longitud) %>%
+      mutate(row_id = row_number()),
+    by = "row_id"
+  ) %>%
+  filter(is.na(Latitud_original) | is.na(Longitud_original) |
+         Latitud_original < 26 | Latitud_original > 72 |
+         Longitud_original < -25 | Longitud_original > 45) %>%
+  select(-row_id)
+
+print(coordenadas_imputadas)
+
+```
+
+# Clasificación geográfica basada en coordenadas
+```{r Clasificación}
+
+# Clasificación geográfica basada en coordenadas
+regiones2 <- regiones2 %>%
+  mutate(
+    Norte_Sur = case_when(
+      Latitud > 48 ~ "Norte",
+      Latitud < 44 ~ "Sur",
+      TRUE ~ "Centro"
+    ),
+    
+    Costa_Interior = case_when(
+      # Países sin litoral (interior fijo)
+      Pais_Nombre %in% c("Suiza", "Austria", "Hungría", "Eslovaquia", "Chequia",
+                        "Luxemburgo", "Macedonia del Norte", "Serbia") ~ "Interior",
+      
+      # Regiones interiores dentro de países costeros
+      Pais_Nombre %in% c("Alemania", "Eslovenia", "Polonia", "Albania") & Latitud > 48 ~ "Interior",
+      
+      # Zonas interiores en países con litoral
+      Pais_Nombre %in% c("España", "Francia", "Italia", "Grecia", "Rumanía") & Latitud > 45 & Longitud < 0 ~ "Interior",
+      
+      TRUE ~ "Costa"
+    ),
+    
+    Cuenca = case_when(
+      # Báltico: Norte de Alemania, Polonia, Lituania, Letonia, Estonia, Finlandia sur, Suecia este
+      Pais_Nombre %in% c("Alemania", "Polonia") & Latitud > 53 ~ "Báltico",
+      Pais_Nombre %in% c("Lituania", "Letonia", "Estonia", "Finlandia", "Suecia") & Latitud > 55 ~ "Báltico",
+      Latitud < 45 & Longitud > -10 & Longitud < 30 ~ "Mediterráneo",
+      Longitud < 5 & Latitud >= 45 ~ "Atlántico",
+      TRUE ~ "Otra"
+    )
+  )
+
+
+head(regiones2 %>% select(Nombre_Region, Latitud, Longitud, Norte_Sur, Costa_Interior, Cuenca))
+
+# Visualizamos las regiones con colores por clasificación
+ggplot(regiones2, aes(x = Longitud, y = Latitud)) +
+  geom_point(aes(color = Norte_Sur, shape = Costa_Interior), size = 3, alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Regiones Europeas: Norte/Sur vs Costa/Interior",
+    x = "Longitud", y = "Latitud",
+    color = "Norte/Sur", shape = "Costa/Interior"
+  ) +
+  coord_fixed() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(regiones2, aes(x = Longitud, y = Latitud)) +
+  geom_point(aes(color = Norte_Sur, shape = Cuenca), size = 3, alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Regiones Europeas: Norte/Sur vs Cuenca",
+    x = "Longitud", y = "Latitud",
+    color = "Norte/Sur", shape = "Cuenca"
+  ) +
+  coord_fixed() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(regiones2, aes(x = Longitud, y = Latitud)) +
+  geom_point(aes(color = Costa_Interior, shape = Cuenca), size = 3, alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Regiones Europeas: Costa/Interior vs Cuenca",
+    x = "Longitud", y = "Latitud",
+    color = "Costa/Interior", shape = "Cuenca"
+  ) +
+  coord_fixed() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+# Análisis de Componentes Principales (PCA)
+```{r PCA}
+
+# Variables del modelo
+variables_activas <- c("Emisiones_no_ciudad", "Poblacion_Urbana", 
+                       "Area_Total_km2", "Densidad_media", "PIB_mill_euros")
+
+variables_suple_cuali <- c("Norte_Sur", "Costa_Interior", "Cuenca")
+variables_suple_cuanti <- c("Latitud", "Longitud", "Indice_Contaminacion")
+
+# Filtrar solo columnas relevantes
+regiones_pca <- regiones2 %>%
+  select(Nombre_Region, all_of(variables_activas), 
+         all_of(variables_suple_cuanti), all_of(variables_suple_cuali)) %>%
+  drop_na()
+
+# Usar Nombre_Region como nombres de fila y eliminarla del análisis
+regiones_pca <- regiones2 %>%
+  select(Nombre_Region, all_of(variables_activas), 
+         all_of(variables_suple_cuanti), all_of(variables_suple_cuali)) %>%
+  drop_na() %>%
+  as.data.frame()
+
+rownames(regiones_pca) <- make.unique(regiones_pca$Nombre_Region)
+regiones_pca <- regiones_pca %>% select(-Nombre_Region)
+
+# Ejecutar PCA con 10 componentes
+res.pca <- PCA(regiones_pca,
+               scale.unit = TRUE,
+               ncp = 10,
+               graph = FALSE,
+               quanti.sup = which(colnames(regiones_pca) %in% variables_suple_cuanti),
+               quali.sup = which(colnames(regiones_pca) %in% variables_suple_cuali))
+
+# Eigenvalues y varianza media (Criterio de Kaiser)
+eig.val <- get_eigenvalue(res.pca)
+VPmedio <- 100 * (1 / nrow(eig.val))
+
+fviz_eig(res.pca, addlabels = TRUE) +
+  geom_hline(yintercept = VPmedio, linetype = 2, color = "red") +
+  labs(title = "Porcentaje de varianza explicada por componente")
+
+nrow(eig.val)
+eig.val
+
+# Cuánta varianza explican las primeras componentes
+K <- 3
+res.pca <- PCA(regiones_pca,
+               scale.unit = TRUE,
+               ncp = K,
+               graph = FALSE,
+               quanti.sup = which(colnames(regiones_pca) %in% variables_suple_cuanti),
+               quali.sup = which(colnames(regiones_pca) %in% variables_suple_cuali))
+
+# Representación de variables:
+fviz_pca_var(res.pca, axes = c(1, 2), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07")) +
+  labs(title = "Variables activas en los planos Dim 1 y Dim 2")
+
+fviz_pca_var(res.pca, axes = c(1, 3), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07")) +
+  labs(title = "Variables activas en los planos Dim 1 y Dim 3")
+
+fviz_pca_var(res.pca, axes = c(2, 3), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07")) +
+  labs(title = "Variables activas en los planos Dim 2 y Dim 3")
+
+
+fviz_pca_ind(res.pca,
+             habillage = "Norte_Sur",
+             addEllipses = TRUE,
+             ellipse.level = 0.95,
+             repel = TRUE,
+             palette = "jco",
+             title = "Regiones según Norte-Sur (Dim 1 y 2)",
+             label = "none")
+
+fviz_pca_ind(res.pca,
+             habillage = "Costa_Interior",
+             addEllipses = TRUE,
+             ellipse.level = 0.95,
+             repel = TRUE,
+             palette = "jco",
+             title = "Regiones según Costa-Interior (Dim 1 y 2)",
+             label = "none")
+
+fviz_pca_ind(res.pca,
+             habillage = "Cuenca",
+             addEllipses = TRUE,
+             ellipse.level = 0.95,
+             repel = TRUE,
+             palette = "jco",
+             title = "Regiones según Cuenca geográfica (Dim 1 y 2)",
+             label = "none")
+
+```
+
+# Clustering
+```{r Clustering}
+
+# Extraer coordenadas de los individuos en los 2 primeros componentes
+coord_ind <- res.pca$ind$coord[, 1:2]
+
+# Método del codo
+fviz_nbclust(coord_ind, kmeans, method = "wss") +
+  labs(title = "Método del Codo para determinar número óptimo de clusters")
+
+# Índice de silueta
+fviz_nbclust(coord_ind, kmeans, method = "silhouette") +
+  labs(title = "Análisis de silueta para elegir número óptimo de clusters")
+
+set.seed(123)
+km.res <- kmeans(coord_ind, centers = 2, nstart = 25)
+
+# Añadir resultados al dataframe original
+regiones_cluster <- regiones_pca
+regiones_cluster$Cluster <- factor(km.res$cluster)
+
+# Visualización de clusters en el plano principal del PCA (Dim 1 y 2)
+fviz_cluster(km.res, data = coord_ind,
+             geom = "point",
+             ellipse.type = "norm",
+             palette = "jco",
+             ggtheme = theme_minimal(),
+             main = "Clustering de regiones en espacio PCA (Dim 1 y 2)")
+
+# Comparar clusters según ubicación geográfica
+table(regiones_cluster$Cluster, regiones_cluster$Norte_Sur)
+table(regiones_cluster$Cluster, regiones_cluster$Costa_Interior)
+table(regiones_cluster$Cluster, regiones_cluster$Cuenca)
+
+# Perfil promedio de cada cluster respecto a variables activas
+library(dplyr)
+regiones_cluster %>%
+  group_by(Cluster) %>%
+  summarise(across(all_of(variables_activas), mean, na.rm = TRUE)) %>%
+  knitr::kable(caption = "Perfil promedio por cluster según variables activas")
+
+```
+
+# Explicación emisiones por comunidades
+```{r ModeloL}
+
+# Convertimos a factores las variables categóricas
+regiones2 <- regiones2 %>%
+  mutate(
+    Norte_Sur = factor(Norte_Sur),
+    Cuenca = factor(Cuenca),
+    Costa_Interior = factor(Costa_Interior)
+  )
+
+# Modelo lineal completo con variables numéricas y categóricas
+modelo_completo <- lm(Indice_Contaminacion ~ Poblacion_Urbana + Area_Total_km2 +
+                      Densidad_media + PIB_mill_euros +
+                      Norte_Sur + Cuenca + Costa_Interior,
+                      data = regiones2)
+
+summary(modelo_completo)
+
+# Gráfico de medias por grupo de Norte-Sur
+ggplot(regiones2, aes(x = Norte_Sur, y = Indice_Contaminacion, fill = Norte_Sur)) +
+  geom_boxplot() +
+  labs(title = "Emisiones por grupo Norte-Sur", y = "Contaminación")
+
+# Por cuenca
+ggplot(regiones2, aes(x = Cuenca, y = Indice_Contaminacion, fill = Cuenca)) +
+  geom_boxplot() +
+  labs(title = "Emisiones por Cuenca", y = "Contaminación")
+
+# Por Costa-Interior
+ggplot(regiones2, aes(x = Costa_Interior, y = Indice_Contaminacion, fill = Costa_Interior)) +
+  geom_boxplot() +
+  labs(title = "Emisiones por Costa-Interior", y = "Contaminación")
+
+```
+
+# Visualización en mapas de Europa
+```{r Visualización}
+
+# Convertir a objeto espacial
+regiones_mapa <- regiones2 %>%
+  filter(!is.na(Longitud), !is.na(Latitud), !is.na(Indice_Contaminacion)) %>%
+  st_as_sf(coords = c("Longitud", "Latitud"), crs = 4326)
+
+# Obtener el mapa base de Europa
+europa <- ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+# Crearlo
+ggplot() +
+  geom_sf(data = europa, fill = "grey95", color = "white") +
+  geom_sf(data = regiones_mapa, aes(size = Indice_Contaminacion, color = Norte_Sur), alpha = 0.8) +
+  scale_size_continuous(name = "Contaminación región", range = c(2, 7)) +
+  scale_color_brewer(palette = "Set1", name = "Clasificación Norte-Sur") +
+  coord_sf(
+    xlim = c(-12, 35),
+    ylim = c(35, 71),
+    expand = FALSE
+  ) +
+  labs(
+    title = "Emisiones por regiones europeas",
+    subtitle = "Colores por Norte-Sur, tamaño por contaminación"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12)
+  )
+
+europa <- ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+ggplot() +
+  geom_sf(data = europa, fill = "grey95", color = "white") +
+  geom_sf(data = regiones_mapa, aes(size = Indice_Contaminacion, color = Cuenca), alpha = 0.8) +
+  scale_size_continuous(name = "Contaminación región", range = c(2, 7)) +
+  scale_color_brewer(palette = "Set1", name = "Clasificación Cuenca") +
+  coord_sf(
+    xlim = c(-12, 35),
+    ylim = c(35, 71),
+    expand = FALSE
+  ) +
+  labs(
+    title = "Emisiones por regiones europeas",
+    subtitle = "Colores por Cuenca, tamaño por contaminación"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12)
+  )
+
+europa <- ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+ggplot() +
+  geom_sf(data = europa, fill = "grey95", color = "white") +
+  geom_sf(data = regiones_mapa, aes(size = Indice_Contaminacion, color = Costa_Interior), alpha = 0.8) +
+  scale_size_continuous(name = "Contaminación región", range = c(2, 7)) +
+  scale_color_brewer(palette = "Set1", name = "Clasificación Costa-Interior") +
+  coord_sf(
+    xlim = c(-12, 35),
+    ylim = c(35, 71),
+    expand = FALSE
+  ) +
+  labs(
+    title = "Emisiones por regiones europeas",
+    subtitle = "Colores por Costa-Interior, tamaño por contaminación"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12)
+  )
+```

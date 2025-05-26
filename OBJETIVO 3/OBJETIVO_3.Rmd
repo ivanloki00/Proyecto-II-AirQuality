@@ -1,0 +1,1338 @@
+---
+title: "OBJETIVO_3"
+author: "Hector"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+**1.- Los datos que habéis usado y de qué fuentes.**
+aeropuertos y datos sobre vuelos de (<https://en.wikipedia.org/wiki/List_of_the_busiest_airports_in_Europe>) HITO 2
+
+para obtener las ciudades sin aeropuertos api rquests aqui (<"http://api.geonames.org/searchJSON">)
+
+Y DE LA LISTA DE CIUDADES Y SU CONTAMINACION CUALES CIUDADES NOO TENIAN AEROPUERTO: nos quedamos con 84
+
+```{r}
+library(httr)
+library(jsonlite)
+library(readr)
+library(writexl)
+library(readxl)
+
+# Leer archivo Excel en lugar de CSV
+ciudades <- read_excel("Ciudades_ordenadas_por_Rank.xlsx")
+
+# 2. Usuario de GeoNames
+usuario <- "hectorbelpoz"
+
+# 3. Función para saber si hay un aeropuerto cercano
+tiene_aeropuerto <- function(ciudad) {
+  tryCatch({
+    r1 <- GET("http://api.geonames.org/searchJSON", 
+              query = list(q = ciudad, maxRows = 1, username = usuario))
+    data <- content(r1, as = "parsed", encoding = "UTF-8")
+    if (length(data$geonames) == 0) return("No encontrada")
+    
+    lat <- data$geonames[[1]]$lat
+    lng <- data$geonames[[1]]$lng
+
+    r2 <- GET("http://api.geonames.org/findNearbyJSON", 
+              query = list(lat = lat, lng = lng, radius = 20,
+                           featureClass = "S", featureCode = "AIRP", username = usuario))
+    resultado <- content(r2, as = "parsed", encoding = "UTF-8")
+    
+    if (length(resultado$geonames) > 0) "Sí" else "No"
+  }, error = function(e) {
+    return("Error")
+  })
+}
+
+# 4. Aplicar la función (sin imprimir nada durante el proceso)
+ciudades$`Tiene Aeropuerto` <- sapply(ciudades$City, function(nombre_ciudad) {
+  Sys.sleep(0.1)
+  tiene_aeropuerto(nombre_ciudad)
+})
+
+# 5. Guardar como Excel
+write_xlsx(ciudades, "ciudades_con_aeropuerto.xlsx")
+
+# 6. Mensaje final
+cat("archivo generado: ciudades_con_aeropuerto.xlsx\n")
+
+
+```
+
+```{r}
+library(readr)
+library(dplyr)
+library(writexl)
+library(readxl)
+
+
+# Leer el archivo con resultados
+ciudades <- read_excel("ciudades_con_aeropuerto.xlsx")
+
+# Filtrar solo las ciudades sin aeropuerto cercano
+ciudades_sin_aeropuerto <- ciudades %>%
+  filter(`Tiene Aeropuerto` == "No")
+
+# Guardar el resultado filtrado
+write_xlsx(ciudades_sin_aeropuerto, "ciudades_sin_aeropuerto.xlsx")
+
+cat("archivo generado: ciudades_sin_aeropuerto.xlsx\n")
+
+```
+
+
+SE CALCULA:
+**hacemos esto para asegurarnos de que las ciudades de las que tenemos datos de trafico aereo tengamos tambien datos de contaminacion ambiental**
+
+```{r}
+
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# Leer los archivos Excel
+aeropuertos <- read_excel("Aeropuertos_con_coordenadas.xlsx")
+ciudades <- read_excel("Ciudades_ordenadas_por_Rank.xlsx")
+
+# Estandarizar nombres de ciudad (quitar espacios y pasar a minúsculas)
+aeropuertos <- aeropuertos %>%
+  mutate(Ciudad = tolower(trimws(Ciudad)))
+
+ciudades <- ciudades %>%
+  mutate(City = tolower(trimws(City)))
+
+# Cruce de los dataframes por ciudad
+resultado <- inner_join(aeropuertos, ciudades, by = c("Ciudad" = "City"))
+
+# Guardar el resultado en un nuevo archivo Excel
+write_xlsx(resultado, "Ciudades_comunes_con_datos.xlsx")
+
+```
+
+**Y SI REALMENTE ESOS AEROPUERTOS ESTABAN A MENOS DE 25KM DE LAS CIUDADES: NOS QUEDAMOS CON 28**
+Se considerará que un aeropuerto afecta a la calidad del aire de una ciudad si se encuentra a una distancia igual o menor a 15 km de su núcleo urbano, ya que la dispersión de contaminantes atmosféricos como el PM2.5 puede extenderse en ese rango, especialmente en zonas con condiciones meteorológicas favorables al transporte de partículas.
+**ahora si comparamos la latitud de las ciudades latitude.x con las de los aeropuertos y nos aseguramos que esten a menos de 25 km**
+
+
+```{r}
+
+library(readxl)
+library(writexl)
+library(geosphere)
+library(dplyr)
+
+# Leer el archivo Excel
+ruta_archivo <- "Ciudades_comunes_con_datos.xlsx"
+df <- read_excel(ruta_archivo)
+
+# Asegurar que las coordenadas sean numéricas
+df$latitude.x <- as.numeric(df$latitude.x)
+df$longitude.x <- as.numeric(df$longitude.x)
+df$latitude.y <- as.numeric(df$latitude.y)
+df$longitude.y <- as.numeric(df$longitude.y)
+
+# Eliminar filas con coordenadas faltantes
+df_clean <- df %>% 
+  filter(!is.na(latitude.x) & !is.na(longitude.x) & 
+         !is.na(latitude.y) & !is.na(longitude.y))
+
+# Calcular distancia geodésica en km
+df_clean$distancia_km <- distHaversine(
+  matrix(c(df_clean$longitude.x, df_clean$latitude.x), ncol = 2),
+  matrix(c(df_clean$longitude.y, df_clean$latitude.y), ncol = 2)
+) / 1000  # convertir a km
+
+# Filtrar por distancia menor a 25 km
+df_filtrado <- df_clean %>% filter(distancia_km < 25)
+
+# Escribir a nuevo Excel
+write_xlsx(df_filtrado, "distancia-aeropuerto-ciudad_25km.xlsx")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+# Carga las librerías necesarias
+library(readxl)
+library(dplyr)
+library(writexl)
+
+# Lee el archivo Excel
+df <- read_excel("Ciudades_con_coordenadas.xlsx")
+
+# Ordena el DataFrame por la columna Rank de menor a mayor
+df_ordenado_rank <- df %>%
+  arrange(Rank)
+
+# Muestra los primeros resultados
+head(df_ordenado_rank)
+
+# (Opcional) Guarda el archivo ordenado
+write_xlsx(df_ordenado_rank, "Ciudades_ordenadas_por_Rank.xlsx")
+```
+
+
+
+
+SE CALCULA:
+- DENSIDAD POBLACIONAL: superficie km2
+- ALTITUD
+- RELEVANCIA AEROPUERTOS
+
+
+
+
+queremos calcular la densidad poblacional para ello hay que calcular la superficie km2 de las ciudades
+
+```{r}
+
+# Instalar y cargar paquetes necesarios
+library(readxl)
+library(writexl)
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# Leer el Excel
+df <- read_excel("Ciudades_sin_Aeropuerto_con_Rank.xlsx")
+
+# Función para obtener el QID de una ciudad desde Wikidata
+obtener_qid_wikidata <- function(ciudad) {
+  url <- paste0("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=", 
+                URLencode(ciudad), "&language=es&format=json&type=item")
+  
+  res <- GET(url)
+  if (status_code(res) != 200) return(NA)
+  
+  datos <- content(res, as = "parsed", type = "application/json")
+  if (length(datos$search) == 0) return(NA)
+  
+  return(datos$search[[1]]$id)  # Primer resultado
+}
+
+# Función para obtener la superficie (P2046) dado un QID
+obtener_superficie_wikidata <- function(qid) {
+  url <- paste0("https://www.wikidata.org/wiki/Special:EntityData/", qid, ".json")
+  
+  res <- GET(url)
+  if (status_code(res) != 200) return(NA)
+  
+  datos <- content(res, as = "parsed", type = "application/json")
+  
+  entidad <- datos$entities[[qid]]
+  if (is.null(entidad$claims$P2046)) return(NA)
+  
+  # Obtener la cantidad (valor principal)
+  superficie_claim <- entidad$claims$P2046[[1]]$mainsnak$datavalue$value
+  
+  valor <- superficie_claim$amount
+  unidad <- superficie_claim$unit
+  
+  valor_numerico <- as.numeric(valor)
+  
+  # Convertir de m² a km² si es necesario
+  if (grepl("Q35852", unidad)) {  # Q35852 = metro cuadrado
+    return(valor_numerico / 1e6)
+  } else if (grepl("Q712226", unidad)) {  # Q712226 = kilómetro cuadrado
+    return(valor_numerico)
+  } else {
+    return(NA)
+  }
+}
+
+# Función completa que busca por Wikidata
+buscar_superficie_ciudad <- function(ciudad) {
+  cat("🔍 Buscando QID para:", ciudad, "\n")
+  qid <- obtener_qid_wikidata(ciudad)
+  if (is.na(qid)) {
+    cat("❌ QID no encontrado para", ciudad, "\n\n")
+    return(NA)
+  }
+  
+  cat("QID:", qid, "- buscando superficie...\n")
+  sup <- obtener_superficie_wikidata(qid)
+  
+  if (!is.na(sup)) {
+    cat("Superficie encontrada:", round(sup, 2), "km²\n\n")
+  } else {
+    cat("❌ Superficie no encontrada en Wikidata\n\n")
+  }
+  
+  return(sup)
+}
+
+# Aplicar a cada ciudad
+df$Superficie_km2 <- sapply(df$City, buscar_superficie_ciudad)
+
+# Guardar en nuevo Excel
+write_xlsx(df, "Ciudades_con_superficie_sin_aeropuerto.xlsx")
+
+
+
+```
+
+
+
+```{r}
+
+
+# Instalar y cargar paquetes necesarios
+library(readxl)
+library(writexl)
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# Leer el Excel
+df <- read_excel("distancia-aeropuerto-ciudad_25km.xlsx")
+
+# Función para obtener el QID de una ciudad desde Wikidata
+obtener_qid_wikidata <- function(ciudad) {
+  url <- paste0("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=", 
+                URLencode(ciudad), "&language=es&format=json&type=item")
+  
+  res <- GET(url)
+  if (status_code(res) != 200) return(NA)
+  
+  datos <- content(res, as = "parsed", type = "application/json")
+  if (length(datos$search) == 0) return(NA)
+  
+  return(datos$search[[1]]$id)  # Primer resultado
+}
+
+# Función para obtener la superficie (P2046) dado un QID
+obtener_superficie_wikidata <- function(qid) {
+  url <- paste0("https://www.wikidata.org/wiki/Special:EntityData/", qid, ".json")
+  
+  res <- GET(url)
+  if (status_code(res) != 200) return(NA)
+  
+  datos <- content(res, as = "parsed", type = "application/json")
+  
+  entidad <- datos$entities[[qid]]
+  if (is.null(entidad$claims$P2046)) return(NA)
+  
+  # Obtener la cantidad (valor principal)
+  superficie_claim <- entidad$claims$P2046[[1]]$mainsnak$datavalue$value
+  
+  valor <- superficie_claim$amount
+  unidad <- superficie_claim$unit
+  
+  valor_numerico <- as.numeric(valor)
+  
+  # Convertir de m² a km² si es necesario
+  if (grepl("Q35852", unidad)) {  # Q35852 = metro cuadrado
+    return(valor_numerico / 1e6)
+  } else if (grepl("Q712226", unidad)) {  # Q712226 = kilómetro cuadrado
+    return(valor_numerico)
+  } else {
+    return(NA)
+  }
+}
+
+# Función completa que busca por Wikidata
+buscar_superficie_ciudad <- function(ciudad) {
+  cat("🔍 Buscando QID para:", ciudad, "\n")
+  qid <- obtener_qid_wikidata(ciudad)
+  if (is.na(qid)) {
+    cat("❌ QID no encontrado para", ciudad, "\n\n")
+    return(NA)
+  }
+  
+  cat("QID:", qid, "- buscando superficie...\n")
+  sup <- obtener_superficie_wikidata(qid)
+  
+  if (!is.na(sup)) {
+    cat("Superficie encontrada:", round(sup, 2), "km²\n\n")
+  } else {
+    cat("❌ Superficie no encontrada en Wikidata\n\n")
+  }
+  
+  return(sup)
+}
+
+# Aplicar a cada ciudad
+df$Superficie_km2 <- sapply(df$Ciudad, buscar_superficie_ciudad)
+
+# Guardar en nuevo Excel
+write_xlsx(df, "Ciudades_con_superficie_con_aeropuerto.xlsx")
+
+
+
+```
+
+
+calculamos densidad poblacional para con_aeropuerto
+
+```{r}
+
+# Cargar librerías necesarias
+library(readxl)
+library(dplyr)
+library(writexl)
+
+# Ruta al archivo de entrada (ajusta si es necesario)
+ruta_archivo <- "Ciudades_con_superficie_con_aeropuerto.xlsx"
+
+# Leer la hoja del archivo Excel
+df <- read_excel(ruta_archivo, sheet = "Sheet1")
+
+# Calcular densidad poblacional (habitantes por km2)
+df <- df %>%
+  mutate(Densidad_poblacional_hab_km2 = `Population in the city` / Superficie_km2)
+
+# Guardar el nuevo dataframe en un archivo Excel
+write_xlsx(df, path = "FINAL_con_aeropuerto.xlsx")
+
+
+```
+
+
+para sin aeropuerto
+
+```{r}
+
+# Cargar librerías necesarias
+library(readxl)
+library(dplyr)
+library(writexl)
+
+# Ruta al archivo de entrada (ajusta si es necesario)
+ruta_archivo <- "Ciudades_con_superficie_sin_aeropuerto.xlsx"
+
+# Leer la hoja del archivo Excel
+df <- read_excel(ruta_archivo, sheet = "Sheet1")
+
+# Calcular densidad poblacional (habitantes por km2)
+df <- df %>%
+  mutate(Densidad_poblacional_hab_km2 = `Population in the city` / Superficie_km2)
+
+# Guardar el nuevo dataframe en un archivo Excel
+write_xlsx(df, path = "FINAL_SIN_aeropuerto.xlsx")
+
+
+```
+
+
+**altitud**
+
+```{r}
+# Instalar si no los tienes
+# install.packages(c("readxl", "writexl", "httr", "jsonlite", "dplyr"))
+
+library(readxl)
+library(writexl)
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# 1. Cargar datos
+ciudades <- read_excel("Ciudades_con_superficie_con_aeropuerto.xlsx")
+
+# 2. Función robusta para consultar Open-Elevation
+get_altura_segura <- function(lat, lon) {
+  url <- paste0("https://api.open-elevation.com/api/v1/lookup?locations=", lat, ",", lon)
+  
+  tryCatch({
+    resp <- httr::GET(url)
+    if (resp$status_code == 200) {
+      data <- fromJSON(content(resp, as = "text", encoding = "UTF-8"))
+      return(data$results$elevation[1])
+    } else {
+      return(NA)
+    }
+  }, error = function(e) {
+    return(NA)
+  })
+}
+
+# 3. Aplicar con pausas y mensajes
+altitudes <- numeric(nrow(ciudades))
+
+for (i in seq_len(nrow(ciudades))) {
+  lat <- ciudades$latitude.city[i]
+  lon <- ciudades$longitude.city[i]
+  message("Consultando ciudad ", i, "/", nrow(ciudades), ": ", ciudades$full_city[i])
+  altitudes[i] <- get_altura_segura(lat, lon)
+  Sys.sleep(1)  # Pausa para evitar saturar el servidor
+}
+
+# 4. Añadir altitud al dataset
+ciudades$altitud_m <- altitudes
+
+# 5. Guardar resultado
+write_xlsx(ciudades, "altitud_con_Aeropuerto.xlsx")
+
+cat("Archivo 'naltitud_con_Aeropiuertoxlsx' generado con altitud consultada vía Open-Elevation.\n")
+
+
+
+```
+
+
+
+```{r}
+
+# Instalar si no los tienes
+# install.packages(c("readxl", "writexl", "httr", "jsonlite", "dplyr"))
+
+library(readxl)
+library(writexl)
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# 1. Cargar datos
+ciudades <- read_excel("Ciudades_con_superficie_sin_aeropuerto.xlsx")
+
+# 2. Función robusta para consultar Open-Elevation
+get_altura_segura <- function(lat, lon) {
+  url <- paste0("https://api.open-elevation.com/api/v1/lookup?locations=", lat, ",", lon)
+  
+  tryCatch({
+    resp <- httr::GET(url)
+    if (resp$status_code == 200) {
+      data <- fromJSON(content(resp, as = "text", encoding = "UTF-8"))
+      return(data$results$elevation[1])
+    } else {
+      return(NA)
+    }
+  }, error = function(e) {
+    return(NA)
+  })
+}
+
+# 3. Aplicar con pausa y mensajes
+altitudes <- numeric(nrow(ciudades))
+
+for (i in seq_len(nrow(ciudades))) {
+  lat <- ciudades$latitude[i]
+  lon <- ciudades$longitude[i]
+  message("Consultando ciudad ", i, "/", nrow(ciudades), ": ", ciudades$full_city[i])
+  altitudes[i] <- get_altura_segura(lat, lon)
+  Sys.sleep(1)  # Pausa para evitar saturar la API
+}
+
+# 4. Añadir altitud al dataframe
+ciudades$altitud_m <- altitudes
+
+# 5. Guardar resultado
+write_xlsx(ciudades, "altitud_sin_Aeropuerto.xlsx")
+
+cat("Archivo 'altitud_sin_Aeropuerto.xlsx' generado con altitud consultada vía Open-Elevation.\n")
+
+
+```
+
+
+
+**relevancia aeropuertos**
+
+```{r}
+# Instalar si no tienes estas librerías
+# install.packages(c("readxl", "writexl", "dplyr"))
+
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# 1. Cargar tu archivo
+ciudades <- read_excel("Ciudades_con_superficie_con_aeropuerto.xlsx")
+
+# 2. Calcular las métricas
+ciudades <- ciudades %>%
+  mutate(
+    pasajeros_por_habitante = Passengers_2024 / `Population in the city`,
+    pasajeros_por_km2 = Passengers_2024 / Superficie_km2
+  )
+
+# 3. Clasificar peso del aeropuerto según pasajeros por habitante
+ciudades <- ciudades %>%
+  mutate(
+    peso_aeropuerto = case_when(
+      pasajeros_por_habitante > 10 ~ "muy alto",
+      pasajeros_por_habitante > 5  ~ "alto",
+      pasajeros_por_habitante > 1  ~ "moderado",
+      TRUE                         ~ "bajo"
+    )
+  )
+
+# 4. Ver los resultados principales
+print(ciudades %>%
+        select(full_city, pasajeros_por_habitante, pasajeros_por_km2, peso_aeropuerto) %>%
+        arrange(desc(pasajeros_por_habitante)))
+
+# 5. Guardar en Excel
+write_xlsx(ciudades, "peso_aeropuerto.xlsx")
+
+cat("Archivo 'peso_aeropuerto.xlsx' generado correctamente con métricas y clasificación.\n")
+
+
+```
+
+
+
+**juntar tablas**
+
+
+```{r}
+
+# Instala si no tienes estas librerías
+# install.packages(c("readxl", "writexl", "dplyr"))
+
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# 1. Cargar archivos
+peso <- read_excel("peso_aeropuerto.xlsx")
+altitud <- read_excel("altitud_con_Aeropuerto.xlsx")
+
+# 2. Seleccionar solo la columna necesaria de altitud
+altitud_simple <- altitud %>%
+  select(full_city, altitud_m)
+
+# 3. Unir ambos dataframes por full_city
+peso_altitud <- peso %>%
+  left_join(altitud_simple, by = "full_city")
+
+# 4. Guardar el archivo combinado
+write_xlsx(peso_altitud, "peso_aeropuerto_con_altitud.xlsx")
+
+cat("Archivo 'peso_aeropuerto_con_altitud.xlsx' generado correctamente.\n")
+
+
+```
+
+
+
+
+```{r}
+
+# Cargar librerías
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# Leer los archivos Excel
+peso_df <- read_excel("peso_aeropuerto_con_altitud.xlsx")
+final_df <- read_excel("FINAL_con_aeropuerto.xlsx")
+
+# Seleccionar solo columnas necesarias de final_df
+final_df_sel <- final_df %>%
+  select(Airport, Ciudad, Densidad_poblacional_hab_km2)
+
+# Realizar el merge por 'Airport' y 'Ciudad'
+merged_df <- left_join(peso_df, final_df_sel, by = c("Airport", "Ciudad"))
+
+# Guardar el nuevo DataFrame en un archivo Excel
+write_xlsx(merged_df, "altitud_con_Aeropuerto.xlsx")
+
+```
+
+
+```{r}
+# Cargar librerías
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# Leer los archivos Excel
+altitud_df <- read_excel("altitud_sin_Aeropuerto.xlsx")
+final_df <- read_excel("FINAL_SIN_aeropuerto.xlsx")
+
+# Seleccionar columnas necesarias de final_df
+final_df_sel <- final_df %>%
+  select(City, Country, Densidad_poblacional_hab_km2)
+
+# Realizar el merge por 'City' y 'Country'
+merged_df <- left_join(altitud_df, final_df_sel, by = c("City", "Country"))
+
+
+write_xlsx(merged_df, "altitud_sin_aeropuerto.xlsx")
+
+```
+
+
+```{r}
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# Leer los archivos Excel
+final_sin <- read_excel("FINAL_SIN_aeropuerto.xlsx")
+altitud_sin <- read_excel("altitud_sin_Aeropuerto.xlsx")
+
+# Seleccionar solo la columna necesaria
+altitud_solo_altura <- altitud_sin %>%
+  select(City, altitud_m) %>%
+  distinct()
+
+# Hacer el merge por "City"
+final_sin_actualizado <- final_sin %>%
+  left_join(altitud_solo_altura, by = "City")
+
+# Guardar el resultado
+write_xlsx(final_sin_actualizado, "FINAL_SIN_aeropuerto_actualizado.xlsx")
+```
+
+
+
+```{r}
+
+library(readxl)
+library(writexl)
+library(dplyr)
+
+# Cargar los archivos
+final <- read_excel("FINAL_con_aeropuerto.xlsx")
+altitud <- read_excel("altitud_con_Aeropuerto.xlsx")
+
+# Seleccionar solo las columnas necesarias de altitud
+altitud_reducido <- altitud %>%
+  select(Airport, peso_aeropuerto, altitud_m, pasajeros_por_km2, pasajeros_por_habitante) %>%
+  distinct()
+
+# Unir las bases de datos por la columna 'Airport'
+final_actualizado <- final %>%
+  left_join(altitud_reducido, by = "Airport")
+
+# Guardar el resultado en un nuevo archivo Excel
+write_xlsx(final_actualizado, "FINAL_con_aeropuerto_actualizado.xlsx")
+
+```
+
+
+
+```{r}
+
+# Cargar paquetes necesarios
+library(FactoMineR)
+library(factoextra)
+
+# Leer el archivo Excel (asegúrate de tener readxl instalado)
+library(readxl)
+datos <- read_excel("FINAL_SIN_aeropuerto_actualizado.xlsx", sheet = "Sheet1")
+# Seleccionar variables numéricas relevantes para el PCA
+variables <- datos[, c("Fine particulate matter in μg/m3",
+                       "Population in the city",
+                       "Coches/1000 habitantes",
+                       "Station Count",
+                       "Densidad_poblacional_hab_km2",
+                       "Superficie_km2",
+                       "altitud_m")]
+
+# Eliminar filas con NA Y conservar las ciudades válidas
+datos_limpios <- datos[complete.cases(variables), ]
+variables <- na.omit(variables)  # o: variables <- variables[complete.cases(variables), ]
+
+
+# Ejecutar el PCA
+res.pca <- PCA(variables, scale.unit = TRUE, graph = FALSE)
+
+# Obtener los valores propios
+eig.val <- get_eigenvalue(res.pca)
+
+# Calcular el valor promedio de varianza explicada
+VPmedio <- 100 * (1 / nrow(eig.val))
+
+# Graficar la varianza explicada con línea roja del valor medio
+fviz_eig(res.pca, addlabels = TRUE) +
+  geom_hline(yintercept = VPmedio, linetype = 2, color = "red") +
+  labs(title = "Varianza explicada por componente principal",
+       y = "Porcentaje de varianza explicada",
+       x = "Componentes principales")
+
+
+```
+
+
+
+```{r}
+
+res.pca$eig
+
+```
+
+
+
+
+
+```{r}
+
+fviz_pca_var(res.pca, axes = c(1,2), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+```
+
+
+```{r}
+
+fviz_pca_var(res.pca, axes = c(2,3), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+
+```
+
+
+
+```{r}
+
+fviz_contrib(res.pca, choice = "var", axes = 1, top = 5)
+fviz_contrib(res.pca, choice = "var", axes = 2, top = 5)
+fviz_contrib(res.pca, choice = "var", axes = 3, top = 5)
+
+
+
+```
+
+```{r}
+# Instalar writexl si no está instalad
+library(writexl)
+
+# Extraer coordenadas (scores) de las ciudades en los componentes principales
+coord_ciudades <- res.pca$ind$coord
+
+# Añadir nombres de las ciudades
+# Añadir nombres de las ciudades (ya filtradas)
+coord_ciudades_df <- data.frame(
+  Ciudad = datos_limpios$City,
+  PC1 = coord_ciudades[, 1],
+  PC2 = coord_ciudades[, 2]
+)
+
+
+# Ordenar por PC2 en orden descendente (valores más altos)
+coord_ciudades_df_ord <- coord_ciudades_df[order(-coord_ciudades_df$PC2), ]
+
+# Exportar las 20 primeras ciudades más contaminadas según PC2 a Excel
+write_xlsx(head(coord_ciudades_df_ord, 28), "Mas_contam_sin_aeropuerto.xlsx")
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# Número de componentes a utilizar
+K <- 3
+
+# Extraer las puntuaciones de las K primeras componentes principales
+misScores <- res.pca$ind$coord[, 1:K]
+
+# Obtener los eigenvalores de las K primeras componentes
+eig.val <- get_eigenvalue(res.pca)
+autovalores <- eig.val[1:K, 1]  # Columna 1: varianza explicada (eigenvalues)
+
+# Calcular la estadística T² de Hotelling
+miT2 <- colSums(t(misScores^2) / autovalores)
+
+# Número de observaciones
+I <- nrow(misScores)
+
+# Calcular los umbrales F al 95% y 99%
+F95 <- K * (I^2 - 1) / (I * (I - K)) * qf(0.95, K, I - K)
+F99 <- K * (I^2 - 1) / (I * (I - K)) * qf(0.99, K, I - K)
+
+# Graficar los valores de T² con los umbrales
+plot(1:length(miT2), miT2, type = "p", pch = 20,
+     xlab = "Ciudades", ylab = expression(T^2),
+     main = expression("Estadística de Hotelling " ~ T^2))
+abline(h = F95, col = "orange", lty = 2, lwd = 2)
+abline(h = F99, col = "red3", lty = 2, lwd = 2)
+legend("topright", legend = c("F95", "F99"),
+       col = c("orange", "red3"), lty = 2, lwd = 2)
+
+
+```
+
+
+
+```{r}
+
+anomalas = which(miT2 > F99)
+anomalas
+
+```
+
+
+```{r grafico_contribuciones_tipo_barplot}
+# Número de componentes usados
+K <- 3
+
+# Scores (coordenadas en componentes principales)
+misScores <- res.pca$ind$coord[, 1:K]
+
+# Eigenvalores
+eig.val <- res.pca$eig[1:K, 1]
+
+# Loadings ajustados al estilo prcomp (rotaciones escaladas)
+misLoadings <- sweep(res.pca$var$coord[, 1:K], 2, sqrt(eig.val), FUN = "/")
+
+# Función para calcular contribuciones T² de una observación
+contribT2 <- function(X, scores, loadings, eigenval, observ) {
+  z <- scores[observ, ]
+  t2_contrib <- (z %*% t(loadings))^2
+  t2_contrib <- t(t2_contrib)
+  rownames(t2_contrib) <- colnames(X)
+  colnames(t2_contrib) <- "Contribución T²"
+  return(t2_contrib)
+}
+
+# Datos estandarizados (X)
+X <- scale(variables)
+
+# Índices de las observaciones anómalas (24 y 33, en índice R: 24 y 33)
+for (observ in c(24, 56)) {
+  mycontrisT2 <- contribT2(X = X, scores = misScores, loadings = misLoadings,
+                           eigenval = eig.val, observ = observ)
+
+  # Graficar contribuciones tipo barplot base
+  par(mar = c(9, 2.3, 3, 1))
+  barplot(mycontrisT2[, 1],
+          las = 2,
+          main = paste0("Contribución T² - Observación ", observ),
+          col = "steelblue",
+          border = "black")
+}
+```
+
+
+
+```{r contribuciones_t2_anomalias}
+
+# Score plots
+library(grid)
+library(gridExtra)
+
+
+
+p1 = fviz_pca_ind(res.pca, axes = c(1,2), geom = c("point"), 
+                  habillage = factor(miT2 > F99))
+
+p2 = fviz_pca_ind(res.pca, axes = c(2,3), geom = c("point"),
+                  habillage = factor(miT2 > F99))
+
+grid.arrange(p1, p2, nrow = 1)
+
+```
+
+
+```{r}
+
+# Cargar librerías
+library(readxl)
+library(dplyr)
+library(writexl)
+
+# Leer los archivos Excel
+final_df <- read_excel("FINAL_SIN_aeropuerto_actualizado.xlsx")
+contam_df <- read_excel("Mas_contam_sin_aeropuerto.xlsx")
+
+# Filtrar final_df para conservar solo las ciudades que están en contam_df
+filtered_final_df <- final_df %>%
+  filter(City %in% contam_df$Ciudad)
+
+# Guardar el resultado en un nuevo archivo Excel
+write_xlsx(filtered_final_df, "Final_sin_aeropuerto.xlsx")
+
+
+```
+
+Nos DABA DOS CIUDADES ANOMALAS CON MUY BUENA CALIDAD DEL AIRE, QUE ERAN CEUTA, ESPAÑA Y Århus DINAMARCA
+ASI QUE LO SUSTITUIMOS POR LAS CIUDADES CON PEOR CONTAMINACION QUE NO HABIAN ENTRADO EN LA LISTA MANUALMENTE PARA PODER HACER EL ANALISIS DE CORRELACIONES SIN PROBLEMAS
+QUE FUERON Zilina Slovakia Y Lecco ITALIA
+
+
+
+1. Comparación de medias
+Usar una prueba t de Student para comparar la media de PM2.5 entre ambos grupos:
+
+Hipótesis nula: no hay diferencia entre medias.
+
+Hipótesis alternativa: las medias son diferentes.
+
+
+```{r}
+# Cargar librerías necesarias
+library(dplyr)
+library(readr)   # Para leer CSV
+library(readxl)  # Para leer Excel
+
+# Leer los datos
+sin_aeropuerto <- read_csv("Datos_Actualizados_sin_Aeropuerto.csv")
+con_aeropuerto <- read_excel("FINAL_con_aeropuerto_actualizado.xlsx")
+
+# Extraer la variable de interés: Fine particulate matter in μg/m3
+pm25_sin <- sin_aeropuerto$`Fine particulate matter in μg/m3`
+pm25_con <- con_aeropuerto$`Fine particulate matter in μg/m3`
+```
+
+
+```{r}
+var.test(pm25_con, pm25_sin)
+
+
+```
+
+```{r}
+
+
+# Esto asume que las varianzas son iguales
+t.test(pm25_con, pm25_sin, var.equal = TRUE)
+
+```
+
+
+
+2. Prueba de comparación de medias (Welch Two Sample t-test)
+
+Hipótesis nula (H₀): las medias de PM2.5 son iguales entre ciudades con y sin aeropuerto.
+
+Hipótesis alternativa (H₁): las medias son diferentes.
+
+
+Se rechaza la hipótesis nula con un nivel de confianza altísimo (p < 0.00000004). Hay evidencia estadísticamente significativa de que las ciudades con aeropuerto tienen niveles promedio de contaminación PM2.5 más altos que aquellas sin aeropuerto. La diferencia media estimada está entre aproximadamente 4 y 7.6 μg/m³.
+
+
+
+
+2. Distribución de los rangos (Rank)
+Comparar los rangos promedio para ver si las ciudades con aeropuertos tienden a estar en posiciones más altas (más contaminadas).
+
+```{r}
+# Extraer los vectores de Rank
+rank_sin <- sin_aeropuerto$Rank
+rank_con <- con_aeropuerto$Rank
+
+# Verificar normalidad (opcional, pero recomendable)
+shapiro.test(rank_sin)
+shapiro.test(rank_con)
+
+wilcox.test(rank_con, rank_sin, alternative = "two.sided")
+
+```
+Prueba no paramétrica de Wilcoxon–Mann–Whitney:
+Esta prueba no asume normalidad y es ideal para comparar medianas entre dos grupos.
+
+Se realizó una prueba no paramétrica de Wilcoxon para comparar la posición en el ranking de contaminación (Rank) entre ciudades con y sin aeropuerto, debido a que una de las muestras no cumplía con la suposición de normalidad (p < 0.01 en Shapiro-Wilk).
+
+Los resultados muestran una diferencia significativa en los rangos (W = 83, p < 0.0000001), indicando que las ciudades con aeropuerto tienden a ocupar posiciones más bajas en el ranking general de contaminación, es decir, están entre las más contaminadas del conjunto de datos.
+
+
+
+3. Clasification
+
+```{r}
+
+# Paso 1: Crear un vector con la clasificación + grupo
+clas_sin <- sin_aeropuerto$`Classification Pm25 Conc Txt`
+clas_con <- con_aeropuerto$`Classification Pm25 Conc Txt`
+
+grupo_sin <- rep("Sin Aeropuerto", length(clas_sin))
+grupo_con <- rep("Con Aeropuerto", length(clas_con))
+
+# Paso 2: Combinar en un data frame
+clasificacion_total <- data.frame(
+  Grupo = c(grupo_con, grupo_sin),
+  Clasificacion = c(clas_con, clas_sin)
+)
+
+# Paso 3: Tabla de contingencia
+tabla <- table(clasificacion_total$Grupo, clasificacion_total$Clasificacion)
+print(tabla)
+
+# Paso 4: Prueba chi-cuadrado
+chisq.test(tabla)
+
+```
+
+El test chi-cuadrado indica que la distribución de categorías de contaminación (Classification Pm25 Conc Txt) difiere significativamente entre las ciudades con y sin aeropuerto (p < 0.000001). Esto sugiere una asociación fuerte entre la presencia de aeropuerto y el tipo de clasificación cualitativa de calidad del aire.
+
+
+
+
+2. Correlación (Pearson / Spearman)
+
+```{r}
+library(readxl)
+df_con <- read_excel("FINAL_con_aeropuerto_actualizado.xlsx")
+
+# Asumimos que ya has cargado 'df_con' desde el paso anterior
+# Nos quedamos solo con columnas necesarias
+df_cor <- df_con %>%
+  select(pm25 = `Fine particulate matter in μg/m3`,
+         pasajeros = Passengers_2024,
+         pasajeros_por_km2 = pasajeros_por_km2,
+         pasajeros_por_habitante = pasajeros_por_habitante,
+         peso = peso_aeropuerto)
+
+
+```
+
+El análisis de regresión muestra que no hay una relación lineal significativa entre el número de pasajeros en 2024 y los niveles de PM2.5 en las ciudades con aeropuerto.
+La pendiente es casi nula, y el intervalo de confianza es muy ancho, lo que indica alta incertidumbre y baja capacidad predictiva del modelo.
+
+
+```{r}
+
+# Matriz de scatterplots con correlaciones
+pairs(df_cor[,1:4], main = "Relación entre PM2.5 y variables del aeropuerto")
+
+# También con ggplot para ver relaciones individuales
+library(ggplot2)
+
+ggplot(df_cor, aes(x = pasajeros, y = pm25)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "PM2.5 vs Pasajeros totales", x = "Pasajeros 2024", y = "PM2.5")
+
+ggplot(df_cor, aes(x = pasajeros_por_km2, y = pm25)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "PM2.5 vs Pasajeros/km²", x = "Pasajeros/km²", y = "PM2.5")
+
+
+```
+
+
+
+```{r}
+cor.test(df_cor$pm25, df_cor$pasajeros, method = "pearson")
+cor.test(df_cor$pm25, df_cor$pasajeros_por_km2, method = "pearson")
+```
+
+
+
+ 4. Regresión lineal (simple o múltiple)
+
+
+```{r}
+
+library(dplyr)
+library(readr)
+library(dplyr)
+
+df_sin <- read_csv("Datos_Actualizados_sin_Aeropuerto.csv") %>%
+  mutate(
+    tiene_aeropuerto = 0,
+    pm25 = `Fine particulate matter in μg/m3`,
+    Passengers_2024 = NA,
+    pasajeros_por_km2 = NA,
+    pasajeros_por_habitante = NA,
+    peso_aeropuerto = NA
+  )
+# Añadir variable dummy de presencia de aeropuerto
+df_con <- df_con %>%
+  mutate(tiene_aeropuerto = 1,
+         pm25 = `Fine particulate matter in μg/m3`)
+
+df_sin <- df_sin %>%
+  mutate(tiene_aeropuerto = 0,
+         pm25 = `Fine particulate matter in μg/m3`)
+
+# Unir datasets
+df_total <- bind_rows(df_con, df_sin)
+
+
+```
+
+
+
+```{r}
+
+# Modelo 1: solo presencia de aeropuerto
+modelo1 <- lm(pm25 ~ tiene_aeropuerto, data = df_total)
+summary(modelo1)
+
+
+```
+Las ciudades con aeropuerto tienen, en promedio, 5.8 µg/m³ menos de PM2.5 que las ciudades sin aeropuerto.
+Esta diferencia es estadísticamente significativa.
+El modelo explica aproximadamente el 43% de la variabilidad de la contaminación con una sola variable binaria.
+
+
+```{r}
+# Modelo 2: incluir otras variables de control
+modelo2 <- lm(pm25 ~ tiene_aeropuerto + altitud_m + Densidad_poblacional_hab_km2 + Superficie_km2, data = df_total)
+summary(modelo2)
+
+```
+Aun controlando por altitud, densidad poblacional y superficie, las ciudades con aeropuerto tienen en promedio 5.23 µg/m³ menos de PM2.5, con alta significancia.
+Las variables de control no aportan mejora significativa.
+La presencia de aeropuerto sigue siendo el principal predictor, reforzando que el efecto no es espurio.
+
+
+
+
+Aunque los aeropuertos suelen considerarse fuentes de contaminación, los resultados de los modelos indican que las ciudades con aeropuerto presentan niveles significativamente más bajos de PM2.5 que aquellas sin él.
+Este efecto no se explica por altitud, densidad o superficie urbana, ni por la intensidad del tráfico aéreo.
+Esto sugiere que la presencia del aeropuerto podría estar asociada a otros factores estructurales, como planificación urbana o menores fuentes locales de emisiones, que merecen un análisis más profundo.
+
+
+
+
+
+
+VISUALIZACIÓN
+
+```{r}
+
+# Crear dataframe unificado desde los vectores existentes
+df_pm25 <- data.frame(
+  PM25 = c(pm25_con, pm25_sin),
+  Grupo = c(rep("Con Aeropuerto", length(pm25_con)),
+            rep("Sin Aeropuerto", length(pm25_sin)))
+)
+
+
+```
+
+
+2. Boxplot con puntos superpuestos
+
+```{r}
+
+library(ggplot2)
+
+ggplot(df_pm25, aes(x = Grupo, y = PM25, fill = Grupo)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.4) +
+  labs(title = "Concentración de PM2.5 por grupo",
+       y = "PM2.5 (μg/m³)",
+       x = "") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+```
+
+3. Histograma + curva de densidad
+
+
+```{r}
+
+ggplot(df_pm25, aes(x = PM25, fill = Grupo)) +
+  geom_histogram(aes(y = ..density..), position = "identity", alpha = 0.4, bins = 15) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Distribución de PM2.5 en ciudades con y sin aeropuerto",
+       x = "PM2.5 (μg/m³)",
+       y = "Densidad") +
+  theme_minimal()
+
+
+```
+
+
+4. Violin plot con boxplot interno
+
+
+```{r}
+
+ggplot(df_pm25, aes(x = Grupo, y = PM25, fill = Grupo)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, color = "black", fill = "white") +
+  labs(title = "Distribución y densidad de PM2.5 por grupo",
+       y = "PM2.5 (μg/m³)",
+       x = "") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+```
+
+
+
+POR GRUPOSS
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+
+# Crear etiquetas de grupo
+clas_sin <- sin_aeropuerto %>%
+  group_by(Clasificacion = `Classification Pm25 Conc Txt`) %>%
+  summarise(Frecuencia = n()) %>%
+  mutate(Grupo = "Sin Aeropuerto")
+
+clas_con <- con_aeropuerto %>%
+  group_by(Clasificacion = `Classification Pm25 Conc Txt`) %>%
+  summarise(Frecuencia = n()) %>%
+  mutate(Grupo = "Con Aeropuerto")
+
+# Unir
+df_donut <- bind_rows(clas_sin, clas_con) %>%
+  group_by(Grupo) %>%
+  mutate(Prop = Frecuencia / sum(Frecuencia),
+         Etiqueta = paste0(Clasificacion, " (", round(Prop * 100), "%)"))
+
+
+```
+
+
+
+```{r}
+
+# Donut para cada grupo
+ggplot(df_donut, aes(x = 2, y = Prop, fill = Clasificacion)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  facet_wrap(~Grupo) +
+  xlim(0.5, 2.5) +
+  geom_text(aes(label = Etiqueta), position = position_stack(vjust = 0.5), size = 3) +
+  theme_void() +
+  theme(legend.position = "none") +
+  labs(title = "Distribución cualitativa de contaminación por grupo (PM2.5)")
+
+
+```
+
+
+
+```{r}
+
+# Transformar a proporciones
+df_barra <- df_donut %>%
+  group_by(Grupo) %>%
+  mutate(Porcentaje = Frecuencia / sum(Frecuencia))
+
+ggplot(df_barra, aes(x = Grupo, y = Porcentaje, fill = Clasificacion)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Comparación de categorías PM2.5 por grupo",
+       x = "", y = "Porcentaje", fill = "Clasificación") +
+  theme_minimal()
+
+
+```
+
+
+
+
+
+
+
+
+
+

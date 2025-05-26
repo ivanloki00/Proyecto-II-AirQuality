@@ -1,0 +1,720 @@
+---
+title: "OBJETIVO 1 - PROY"
+author: "celia"
+date: "2025-05-03"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Introducción
+
+Este proyecto trata sobre la calidad del aire en las diferentes ciudades
+europeas. El estudio consistirá en analizar la contaminación ambiental
+de distintos sectores según sus emisiones en las distintas ciudades
+europeas, así como su contribución en el PM 2.5 (materia particulada:
+partículas muy pequeñas en el aire que tienen un diámetro de 2.5
+micrómetros). Además del estudio de otros factores que pueden afectar a
+la calidad del aire.
+
+## Objetivos
+
+OBJETIVO I. Cuantificar y caracterizar la contaminación generada por los
+principales sectores en Europa.
+
+OBJETIVO II. Identificar los sectores con huella directa ciudadana y su
+impacto en la calidad del aire urbana.
+
+OBJETIVO III. Evaluar el impacto de los aeropuertos en la contaminación
+urbana comparando 50 ciudades con aeropuerto frente a 50 sin aeropuerto,
+cuyas ciudades compartan características demográficas similares.
+
+OBJETIVO IV. Estimar un índice de contaminación por país y analizar el
+resto de sectores que no tienen relación directa con la huella ciudadana
+como las industrias o la agricultura.
+
+OBJETIVO V. Comparar patrones de calidad del aire entre regiones
+europeas con distintas características geográficas y demográficas.
+
+## PRIMER OBJETIVO: Cuantificar y caracterizar la contaminación generada por los principales sectores en Europa.
+
+Analizar los perfiles de emisiones de cada sector en las principales
+ciudades europeas, analizando los distintos gases contaminantes emitidos
+(NH₃, COVDM, NOₓ, PM2,5, SOₓ). Se busca entender qué tipo de gases son
+característicos para cada sector, cuál es el sector más contaminante y
+que sectores contaminan más a la calidad del aire de las ciudades.
+
+#### Gases:
+
+NH3 = amoniaco
+
+COVDM = emisiones de compuestos orgánicos volátiles distintos del metano
+
+NOx = óxidos de nitrógeno (puede ser óxido nítrico o dióxido de
+nitrógeno)
+
+PM2.5 = materia particulada (son partículas muy pequeñas en el aire que
+tiene un diámetro de 2.5 micrómetros de diámetro o menos)
+
+SOx = óxidos de azufre
+
+# 1. DATOS USADOS Y FUENTES
+
+## LECTURA DE DATOS
+
+Partimos de una base de datos inicial, llamada Ciudades_origen_gases, la
+cual está medianamente tratada y no tenemos datos nulos, sin embargo
+tenemos un exceso de datos (174900). Vamos a realizar un estudio de las
+variables. Las variables son:
+
+-   **CIUDAD**: Nombre de la ciudad donde se realiza la medición.
+-   **EXTRACCION**: Identificador de extracción de datos para la ciudad
+    (Ciudad, Comunidad, Nacional e Internacional)
+-   **SECTOR**: Código numérico que indica el sector de origen de la
+    emisión (cada numero corresponde con un sector "Agricultura,
+    Shipping, Transporte, Industria...")
+-   **GAS**: Tipo de gas emitido (NH₃, NMVOC, NOₓ, PM2.5, SOₓ).
+-   **POTENCIAL**: porcentaje de la concentración media anual de PM2,5
+    puede atribuirse a un determinado precursor (como el NH₃ o NOₓ)
+    emitido por un sector específico. Si el sector "Agricultura" emite
+    NH₃ y su POTENCIAL es 20%, significa que el 20% del PM₂.₅ en esa
+    ciudad se forma a partir de las reacciones químicas del NH₃
+    agrícola.
+
+## HITO 2
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(ggplot2)
+library(writexl)
+library(knitr)
+library(stringr)
+library(rvest)
+library(xml2)
+
+df <- read_excel("Ciudades_origen_gases.xlsx")
+summary(df)
+```
+
+```{r}
+head(df, 5)              # Primeras 5 filas
+df[60:65, ]              # Filas 60 a 65
+df[177:182, ]            # Filas 177 a 182
+```
+
+#### Preparación base de datos
+
+La variable **EXTRACCION** tiene 4 identificadores distintos
+`(Ciudad, Comunidad, Nacional e Internacional)`. El `Internacional`
+queda descartado porque como vemos en el primer muestreo, "A Coruña" no
+tiene ese tipo.
+
+Ahora vamos a determinar que categoría aporta más información
+diferenciada y cuáles dos categorías son menos relevantes para
+eliminarlas filas de manera más efectiva. Y realizar una selección de
+las categorías que más nos interesan.
+
+**Desviación estándar:** Cuanto mayor sea, más dispersos están los
+datos.\
+**Coeficiente de variación:** Un valor alto indica mayor variabilidad
+relativa.\
+**Rango:** Un rango amplio sugiere más diversidad en los valores.
+
+`"City"` tiene la mayor variabilidad, con la desviación estándar alta y
+el coeficiente de variación más alto.\
+`"National"` tiene la menor variabilidad, con valores casi constantes.\
+`"Comm"` tiene una variabilidad intermedia, pero sigue siendo baja
+comparada con City.
+
+Como uno de los objetivos es el cruce de ciertas variables para hacer un
+PCA, nos interesa elegir la categoría que tenga mayor variabilidad y
+permita distinguir diferencias significativas entre los datos.
+
+Entonces filtramos para incluir solo extracciones "City", y el resultado
+será una nueva base de datos llamada gases_city.
+
+En esta nueva base de datos tendremos las variables:
+
+-   **CIUDAD**: Nombre de la ciudad donde se realiza la medición.
+
+-   **SECTOR**: Código numérico que indica el sector de origen de la
+    emisión (1-12)
+
+-   **GAS**: Tipo de gas emitido (NH₃, NMVOC, NOₓ, PM2.5, SOₓ).
+
+-   **POTENCIAL**: porcentaje de la concentración media anual de PM2,5
+    puede atribuirse a un determinado precursor (como el NH₃ o NOₓ)
+    emitido por un sector específico.
+
+    #### SECTORES:
+
+1.  Public Power: energía pública.
+2.  Industry: industria
+3.  Other stationary combustion: Otros tipos de combustión estacionaria
+4.  Fugitives: fugitivos
+5.  Solvents: disolventes
+6.  Road transportation: transporte de carretera
+7.  Shipping: transporte marítimo
+8.  Aviation: aviación
+9.  Off road transportation: transporte todoterreno
+10. Waste: residuos
+11. Agriculture livestock: agricultura y ganadería
+12. Agriculture other: otros tipos de agricultura
+
+# 2. LEER EXCEL NUEVO Y TRANSFORMACIONES
+
+Conversión de la variable POTENCIAL a numérico (cambiar comas por
+puntos).
+
+```{r}
+library(readxl)
+library(dplyr)
+
+
+df <- read_excel("gases_city.xlsx")
+
+# Corregir formato decimal y convertir a numérico
+df <- df %>%
+  mutate(POTENCIAL = as.numeric(gsub(",", ".", POTENCIAL)))
+summary(df)
+```
+
+# 3. PLANTEAMIENTO DE LA SOLUCIÓN
+
+El objetivo es *descriptivo*, buscando:
+
+-   Identificar sectores más contaminantes y gases asociados.
+
+**Técnicas aplicadas**:
+
+-   Agrupación de datos por sector y gas.
+
+-   Visualizaciones (barras, heatmaps, facetado).
+
+-   PCA para reducir dimensionalidad y explorar relaciones entre
+    sectores y gases.
+
+Agrupar por sector y gas y sumar las emisiones: para ver qué gas afecta
+más a cada sector.
+
+```{r}
+emisiones_por_sector <- df %>%
+  group_by(SECTOR, GAS) %>%
+  summarise(Total_Emisiones = sum(POTENCIAL, na.rm = TRUE)) %>%
+  arrange(SECTOR, desc(Total_Emisiones))
+
+# Mostrar los primeros resultados
+print(emisiones_por_sector)
+
+```
+
+### PERFILES DE EMISIÓN POR CIUDAD (no incorporar en el objetivo)
+
+```{r}
+# Total de emisiones por CIUDAD y GAS: para ver qué gas es más contaminante en cada ciudad
+emisiones_ciudad_gas <- df %>%
+  group_by(CIUDAD, GAS) %>%
+  summarise(Total_Emisiones = sum(POTENCIAL, na.rm = TRUE)) %>%
+  arrange(CIUDAD, desc(Total_Emisiones))
+
+print(emisiones_ciudad_gas)
+
+
+```
+
+```{r}
+# tampoco poner en la memoria del objetivo
+# Total de emisiones por CIUDAD y SECTOR: para ver qué sector es el más contaminante 
+
+emisiones_ciudad_sector <- df %>%
+  group_by(CIUDAD, SECTOR) %>%
+  summarise(Total_Emisiones = sum(POTENCIAL, na.rm = TRUE)) %>%
+  arrange(CIUDAD, desc(Total_Emisiones))
+
+print(emisiones_ciudad_sector)
+
+```
+
+### 4. DESARROLLO TÉCNICO: VISUALIZACIÓN
+
+*SECTORES:*
+
+1.  Public Power: energía pública.
+2.  Industry: industria
+3.  Other stationary combustion: Otros tipos de combustión estacionaria
+4.  Fugitives: fugitivos
+5.  Solvents: disolventes
+6.  Road transportation: transporte de carretera
+7.  Shipping: transporte marítimo
+8.  Aviation: aviación
+9.  Off road transportation: transporte todoterreno
+10. Waste: residuos
+11. Agriculture livestock: agricultura y ganadería
+12. Agriculture other: otros tipos de agricultura
+
+## Gráfico de barras apiladas
+
+```{r}
+
+library(ggplot2)
+
+# Gráfico: emisiones por sector y gas
+ggplot(emisiones_por_sector, aes(x = factor(SECTOR), y = Total_Emisiones, fill = GAS)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Emisiones por Sector y Tipo de Gas", x = "Sector", y = "Total emisiones") +
+  theme_minimal()
+
+```
+
+### INTERPRETACIÓN GRAFICO
+
+#### **SECTORES MÁS CONTAMINANTES**
+
+-   El sector más contaminante es el 3, correspondiente a Otros tipos de
+    combustión estacionaria (emisiones de combustibles quemados en
+    equipos estacionarios, como es el caso de la combustión de petróleo
+    o gas en un sistema de calefacción local). Este sector se ve
+    afectado sobretodo por el PM2,5 (Material Particulado Fino) y un
+    poco de óxidos de azufre (SOx) y óxidos de nitrógeno (NOx)
+
+-   Otro de los sectores más contaminantes es el 2 (Industria). Que
+    también emite grandes cantidades de Sox, PM2,5 y NOx por los
+    procesos de fabricación y combustión.
+
+-   El tercer sector más contaminante es el 6 (transporte de carretera),
+    donde predomina en la emisión de NOₓ y PM2,5, derivado de motores de
+    combustión.
+
+-   Otro sector también muy contaminante aunque menos que los anteriores
+    es el de la energía pública (1). Uno de los principales emisores,
+    especialmente de SOₓ y NOₓ, debido a la quema de combustibles
+    fósiles.
+
+## Gráfico de barras agrupadas: emisiones por gas en cada sector
+
+```{r}
+ggplot(emisiones_por_sector, aes(x = factor(SECTOR), y = Total_Emisiones, fill = GAS)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "Emisiones por Sector y Tipo de Gas",
+       x = "Sector",
+       y = "Total emisiones") +
+  theme_minimal()
+
+```
+
+**Principales contaminantes por sector**
+
+1.  PM2,5 (Material Particulado Fino): Emitido por todos los sectores
+    aunque los que más lo emiten son: Combustión estacionaria,
+    Transporte de carreteras Industria, con efectos en salud
+    respiratoria.
+
+2.  NOₓ (Óxidos de Nitrógeno): Alto en Energía pública, Industria y
+    Transporte de carretera, afectando directamente la calidad del aire
+    urbano.
+
+3.  SOₓ (Óxidos de Azufre): Proviene principalmente de la Industria, la
+    Energía pública y combustión estacionaria, también presente en
+    Transporte Marítimo, contribuyendo a la lluvia ácida.
+
+4.NH₃ (Amoniaco): Proviene casi exclusivamente de Agricultura y
+ganadería, con impacto en la formación de partículas en suspensión.
+
+#### Gráfico de líneas por gas a lo largo de sectores
+
+```{r}
+ggplot(emisiones_por_sector, aes(x = factor(SECTOR), y = Total_Emisiones, color = GAS, group = GAS)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(title = "Perfil de emisiones por tipo de gas según sector",
+       x = "Sector",
+       y = "Total emisiones") +
+  theme_minimal()
+
+```
+
+#### Facetado: un gráfico de barras por gas
+
+```{r}
+ggplot(emisiones_por_sector, aes(x = factor(SECTOR), y = Total_Emisiones)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  facet_wrap(~GAS, scales = "free_y") +
+  labs(title = "Emisiones por gas y sector",
+       x = "Sector",
+       y = "Total emisiones") +
+  theme_minimal()
+
+```
+
+**Principales contaminantes por sector**
+
+1.  PM2,5 (Material Particulado Fino): Emitido por todos los sectores
+    aunque los que más lo emiten son: Combustión estacionaria,
+    Transporte de carretera e Industria, con efectos en salud
+    respiratoria.
+
+2.  NOₓ (Óxidos de Nitrógeno): Alto en Transporte de carretera, Energía
+    pública e Industria, afectando directamente la calidad del aire
+    urbano.
+
+3.  SOₓ (Óxidos de Azufre): Proviene principalmente de la Industria, la
+    Energía pública y combustión estacionaria, también presente en
+    Transporte Marítimo, contribuyendo a la lluvia ácida.
+
+4.NH₃ (Amoniaco): Proviene casi exclusivamente de Agricultura y
+ganadería, con impacto en la formación de partículas en suspensión.
+
+5.  NMVOC (Compuestos Orgánicos Volátiles No Metánicos): Se asocia
+    fuertemente con Solvents (disolventes) y la Industria.
+
+#### Heatmap: intensidad de gases por sector
+
+```{r}
+library(ggplot2)
+library(reshape2)
+
+# Convertir a matriz para heatmap
+heat_data <- emisiones_por_sector %>%
+  pivot_wider(names_from = GAS, values_from = Total_Emisiones, values_fill = 0)
+
+# Convertir a formato largo para ggplot
+heat_data_long <- melt(heat_data, id.vars = "SECTOR")
+
+ggplot(heat_data_long, aes(x = variable, y = factor(SECTOR), fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(title = "Heatmap: Intensidad de emisión por gas y sector",
+       x = "Gas",
+       y = "Sector") +
+  theme_minimal()
+
+```
+
+# PCA DE EMISIONES POR SECTOR
+
+```{r}
+
+# Objetivo: Cuantificar y caracterizar la contaminación generada por los principales sectores en Europa.
+
+# 1. Carga de Librerías
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(FactoMineR) # Para la función PCA
+library(factoextra) # Para visualizaciones de PCA (fviz_pca_*, fviz_eig, fviz_contrib)
+library(ggplot2)
+library(knitr)      # Para tablas bonitas (kable)
+library(reshape2)   # Para el heatmap (melt)
+
+
+library(mice) # Para imputación de valores faltantes (aunque para los datos actuales no es estrictamente necesario pq ya están limpios)
+library(gridExtra) # Para organizar gráficos en cuadrícula (grid.arrange)
+
+
+# 2. Lectura y Preparación de Datos
+
+df <- read_excel("gases_city.xlsx")
+
+# Convertir la columna POTENCIAL a numérica, reemplazando comas por puntos 
+df <- df %>%
+  mutate(POTENCIAL = as.numeric(gsub(",", ".", POTENCIAL)))
+
+# Crear la matriz para el PCA: Resumir las emisiones sumando por SECTOR y GAS.
+# Cada fila será un SECTOR, cada columna un GAS, y los valores serán las emisiones totales.
+matriz_pca <- df %>%
+  group_by(SECTOR, GAS) %>%
+  summarise(Emisiones = sum(POTENCIAL, na.rm = TRUE)) %>% # Sumar emisiones por cada combinación sector-gas
+  pivot_wider(names_from = GAS, values_from = Emisiones, values_fill = 0) # Transformar a formato ancho
+
+
+# Preparar los datos numéricos para el PCA
+# Guardar los nombres de los sectores para usarlos como etiquetas
+nombres_sectores <- matriz_pca$SECTOR
+datos_pca_num <- matriz_pca[, -1] # Excluir la columna 'SECTOR' que es categórica
+
+
+# Verificar si hay variables con varianza cero y eliminarlas
+datos_pca_num <- datos_pca_num[, apply(datos_pca_num, 2, var, na.rm = TRUE) != 0]
+
+# Definición de los nombres de los sectores (tal como los tienes en tu Rmd) ---
+# Esto es útil para una mejor interpretación de los gráficos finales.
+nombres_legibles_sectores <- c(
+  "Energía Pública", "Industria", "Otra combustión estacionaria", "Fugitivos",
+  "Disolventes", "Transporte de carretera", "Transporte marítimo", "Aviación",
+  "Transportate todoterreno", "Residuos", "Agricultura y ganadería", "Otra agricultura"
+)
+```
+
+```{r}
+# 3. Selección del Número de Componentes Principales (PCs) 
+
+
+# Ejecutar PCA con un número elevado de componentes para evaluar su importancia.
+# scale.unit = TRUE: Centrar y escalar (estandarizar) las variables.
+# graph = FALSE: No generar gráficos automáticamente.
+# ncp = número_máximo_de_componentes (min(nrow-1, ncol)).
+
+res.pca_completo <- PCA(datos_pca_num, scale.unit = TRUE, graph = FALSE, ncp = min(nrow(datos_pca_num)-1, ncol(datos_pca_num)))
+
+# Obtener los valores propios (eigenvalues)
+eig.val <- get_eigenvalue(res.pca_completo)
+
+# Calcular la varianza explicada media por PC
+# (Criterio Kaiser o "varianza media")
+VPmedio = 100 * (1/nrow(eig.val))
+
+# Gráfico del codo (scree plot)
+fviz_eig(res.pca_completo, addlabels = TRUE) +
+  geom_hline(yintercept=VPmedio, linetype=2, color="red") +
+  labs(title = "Gráfico del Codo (Scree Plot) - Varianza Explicada por Componente") +
+  xlab("Componente Principal") +
+  ylab("Porcentaje de Varianza Explicada")
+
+# Mostrar tabla de valores propios
+kable(eig.val)
+```
+
+```{r}
+# --- Selección de 2 PCs ---
+
+# Basándonos en el gráfico del codo y el criterio de la varianza media (línea roja), podemos decidir cuántas PCs son "óptimas" : 2
+K = 2 
+
+# Re-ejecutar PCA con el número K de componentes principales seleccionadas
+res.pca <- PCA(datos_pca_num, scale.unit = TRUE, graph = FALSE, ncp = K)
+
+cat(paste0("Se seleccionan ", K, " PCs, que explican un ",
+           round(eig.val[K,"cumulative.variance.percent"], 1), "% del total de variabilidad de los datos."))
+```
+
+```{r}
+# 4. Validación del Modelo PCA (Detección de Anómalos) 
+
+# --- 4.1. Detección de Anómalos con T2-Hotelling 
+
+# Este estadístico mide la distancia de cada observación al centro del modelo PCA en el espacio de las K PCs.
+
+misScores = res.pca$ind$coord[,1:K]
+miT2 = colSums(t(misScores**2)/eig.val[1:K,1])
+
+I = nrow(datos_pca_num) # Número de observaciones (sectores)
+F95 = K*(I**2 - 1)/(I*(I - K)) * qf(0.95, K, I-K)
+F99 = K*(I**2 - 1)/(I*(I - K)) * qf(0.99, K, I-K)
+
+plot(1:length(miT2), miT2, type = "p", xlab = "Sectores (Índice)", ylab = "T2 Hotelling",
+     main = "T2 Hotelling para la Detección de Sectores Anómalos")
+abline(h = F95, col = "orange", lty = 2, lwd = 2) # Límite del 95%
+abline(h = F99, col = "red3", lty = 2, lwd = 2)   # Límite del 99%
+anomalas_idx = which(miT2 > F95)
+
+cat(paste0("Hay ", length(anomalas_idx), " sectores anómalos que superan el límite del 95%."))
+if (length(anomalas_idx) > 0) {
+  cat(paste0("Sectores anómalos (por índice): ", paste(anomalas_idx, collapse = ", ")))
+  cat(paste0("Nombres de sectores anómalos: ", paste(nombres_legibles_sectores[anomalas_idx], collapse = ", ")))
+}
+```
+
+Observamos que el sector 2 que muestra un valor de T2 de Hotelling
+significativamente más alto que el resto, acercándose a 6.
+
+```{r}
+# --- Visualización de Scores (individuos) coloreados por anomalía 
+
+p1_T2 = fviz_pca_ind(res.pca, axes = c(1,2), geom = c("point"),
+                  habillage = factor(miT2 > F95),
+                  pointshape = 20, pointsize = 3,
+                  repel = TRUE, # Evita la superposición de etiquetas
+                  labelsize = 3) +
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "blue"),
+                     name = "Anómalo > 95% T2") +
+  labs(title = "Score Plot (PC1 vs PC2) con T2 Hotelling")
+ gridExtra::grid.arrange(p1_T2, nrow = 1)
+```
+
+Aparentemente, al considerar solo las dos primeras componentes
+principales, ningún sector se clasifica como anómalo por el criterio T2
+Hotelling al 95%.
+
+```{r}
+# --- 4.2. Distancia al Modelo (SCR - Suma de Cuadrados Residuales) 
+
+# Detecta anomalías moderadas o observaciones no bien explicadas por el modelo.
+# Primero, necesitamos los datos centrados y escalados que usó PCA.
+
+X_scaled <- scale(datos_pca_num, center = TRUE, scale = TRUE)
+
+
+misLoadings <- sweep(res.pca$var$coord, 2, sqrt(res.pca$eig[1:K,1]), FUN="/")
+
+# Calcular la matriz de residuos
+myE = X_scaled - misScores %*% t(misLoadings)
+mySCR = rowSums(myE^2) # SCR para cada observación (fila)
+
+plot(1:length(mySCR), mySCR, type = "l", main = "Distancia al modelo (SCR)",
+     ylab = "SCR", xlab = "Sectores (Índice)", ylim = c(0, max(mySCR) * 1.1))
+
+# Límites de control basados en distribución Chi-cuadrado (aproximación)
+g = var(mySCR)/(2*mean(mySCR))
+h = (2*mean(mySCR)^2)/var(mySCR)
+chi2lim95 = g*qchisq(0.95, df = h)
+chi2lim99 = g*qchisq(0.99, df = h)
+
+abline(h = chi2lim95, col = "orange", lty = 2, lwd = 2)
+abline(h = chi2lim99, col = "red3", lty = 2, lwd = 2)
+
+anomalas_scr_95_idx = which(mySCR > chi2lim95)
+anomalas_scr_99_idx = which(mySCR > chi2lim99)
+
+cat(paste0("Hay ", sum(mySCR > chi2lim95), " sectores que superan el límite del 95% en SCR."))
+if (length(anomalas_scr_95_idx) > 0) {
+  cat(paste0("Sectores anómalos por SCR (95%): ", paste(nombres_legibles_sectores[anomalas_scr_95_idx], collapse = ", ")))
+}
+cat(paste0("Hay ", sum(mySCR > chi2lim99), " sectores que superan el límite del 99% en SCR."))
+if (length(anomalas_scr_99_idx) > 0) {
+  cat(paste0("Sectores anómalos por SCR (99%): ", paste(nombres_legibles_sectores[anomalas_scr_99_idx], collapse = ", ")))
+}
+```
+
+La mayoría de los sectores muestran valores de SCR relativamente bajos y
+estables.
+
+El Sector 3 (Other stationary combustion) muestra un pico de SCR notable
+(alrededor de 4.1). El Sector 12 (Agriculture other) presenta un valor
+de SCR elevado (alrededor de 4.4). El Sector 6 (Road transportation)
+también presenta un valor elevado de SCR, pero menor que el 3 y 12.
+
+Conclusión: El Sector 3 (Other stationary combustion) y el Sector 12
+(Agriculture other) son los que el modelo PCA explica peor. Sus perfiles
+de emisión tienen características que no son completamente capturadas
+por las dos componentes principales.
+
+```{r}
+# 5. Interpretación del Modelo PCA 
+
+# --- 5.1. Gráficos de Variables (Loadings) 
+# Muestra cómo los gases contribuyen a las dimensiones y sus correlaciones.
+# Coloreado por contribución a las PCs representadas
+
+fviz_pca_var(res.pca, axes = c(1,2), repel = TRUE, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             title = "Contribución de gases a los componentes (PC1 vs PC2)")
+```
+
+Este es el círculo de correlación de variables. Muestra cómo los gases
+(variables) se correlacionan con las dos primeras componentes
+principales y entre sí.
+
+PRIMERA PC El eje horizontal. Los gases SOx, PPM25 y NOx tienen flechas
+largas que apuntan hacia la derecha. Esto indica una fuerte correlación
+positiva con Dim1 y entre ellos. Esta componente representa la
+variabilidad asociada con los contaminantes de la combustión, la
+industria y el transporte.
+
+SEGUNDA PC El eje vertical. NMVOC tiene una flecha larga que apunta
+hacia arriba, lo que significa una fuerte correlación positiva con Dim2.
+SOx también tiene una componente positiva en Dim2, lo que sugiere su
+relación con procesos industriales que también emiten NMVOC.
+
+NH3: Su flecha apunta hacia la izquierda (PC negativa). Esto indica que
+NH3 se correlaciona negativamente con los gases de combustión/industria
+(PPM25, NOx, SOx). Esto es coherente con su origen agrícola, que lo
+distingue de las fuentes de los otros gases.
+
+CONCLUSIÓN: Las dos primeras componentes principales resumen claramente
+los patrones de emisión: una relacionada con contaminantes de
+combustión/industria/transporte y otra con emisiones de compuestos
+orgánicos volátiles (NMVOC). NH3 se desmarca de ambos grupos.
+
+```{r}
+# Gráfico de barras de contribución por PC (para entender qué variables son más importantes para cada PC individualmente)
+fviz_contrib(res.pca, choice = "var", axes = 1, top = ncol(datos_pca_num),
+             title = "Contribución de cada gas a la Componente Principal 1")
+fviz_contrib(res.pca, choice = "var", axes = 2, top = ncol(datos_pca_num),
+             title = "Contribución de cada gas a la Componente Principal 2")
+```
+
+La PC1 es una "dimensión" de contaminación por SOx, PM2.5 y NOx,
+predominantemente. La PC2 es principalmente una "dimensión" de
+contaminación por NMVOC, con una contribución secundaria de NOx y SOx.
+
+```{r}
+# --- 5.2. Gráficos de Observaciones (Score Plot) 
+
+# Muestra cómo se agrupan los sectores en el espacio de las componentes principales.
+# Usaremos los nombres legibles de los sectores.
+# Crea un factor con los nombres de los sectores para etiquetar correctamente
+etiquetas_sectores <- factor(nombres_sectores, levels = nombres_sectores, labels = nombres_legibles_sectores)
+
+fviz_pca_ind(res.pca, axes = c(1,2), geom = c("point", "text"),
+             habillage = etiquetas_sectores, # Color por sector (si hay pocos, si no, agrupa por algo más)
+             col.ind = "darkblue", # Puedes elegir un color si no quieres diferenciar por 'habillage'
+             pointshape = 20, pointsize = 3,
+             repel = TRUE, # Evita la superposición de etiquetas
+             labelsize = 3,
+             title = "PCA de Sectores según Perfil de Emisiones (PC1 vs PC2)")
+
+# Puedes añadir elipses de confianza si quieres agrupar los sectores por alguna característica auxiliar
+# Por ejemplo, si tuvieras una variable de "Tipo de Sector" (ej. "Transporte", "Industria", "Agricultura")
+# fviz_pca_ind(res.pca, axes = c(1,2), geom = c("point", "text"),
+#              habillage = TU_VARIABLE_AUXILIAR_DE_TIPO_DE_SECTOR,
+#              addEllipses = TRUE, ellipse.type = "convex",
+#              repel = TRUE, labelsize = 3,
+#              title = "PCA de Sectores por Tipo de Emisión con Elipses")
+```
+
+```{r}
+# --- 5.3. Biplot (Variables y Observaciones Juntas)
+
+# Combina el gráfico de variables y el de individuos. Útil para interpretar las relaciones.
+
+
+fviz_pca_biplot(res.pca, axes = c(1,2),
+                # Variables (gases)
+                label = "var", # Mostrar etiquetas de las variables (gases)
+                col.var = "black", # Color de las flechas de los gases
+                repel = TRUE, # Evitar superposición de etiquetas de gases
+                labelsize = 4,
+                # Individuos (sectores)
+                geom.ind = "point", # Mostrar los sectores como puntos
+                pointshape = 20, pointsize = 3, # Estilo de los puntos de los sectores
+                col.ind = as.factor(nombres_sectores), # Colorear los puntos de los sectores por su ID
+                legend.title = "Sector ID",
+                title = "Biplot PCA: Sectores y Gases (PC1 vs PC2)")
+
+
+```
+
+Este gráfico combina las observaciones (sectores, representados por
+puntos de colores) y las variables (gases, representados por flechas) en
+un mismo plano definido por PC1 y PC2.
+
+Los sectores 2 (industria), 3(otros combustión estacionaria) y
+6(transporte de carretera) se encuentran a la derecha del gráfico. Esto
+indica que estos sectores están fuertemente asociados con los gases SOx,
+PPM25 y NOx. Esta es la confirmación visual de que son los principales
+emisores de contaminantes de combustión/industria/transporte.
+
+El Sector 5 (Solvents) se ubica en la parte superior del gráfico, muy
+cerca de la flecha de NMVOC. Esto demuestra que este sector es el
+principal emisor de NMVOC. El Sector 2 (Industry) también se encuentra
+en la parte superior derecha, lo que indica que, además de los gases de
+combustión, también emite NMVOC.
+
+Los sectores 11 (Agricultura y ganadería) y 12 (Agriculture other) se
+agrupan claramente en el lado izquierdo del gráfico, cerca de la flecha
+de NH3. Esto confirma que estos sectores son los principales emisores de
+NH3 y que sus perfiles de emisión son distintos de los demás sectores.
